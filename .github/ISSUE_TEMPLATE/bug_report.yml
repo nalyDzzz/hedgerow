@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Hedgerow does not work the way it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Connect to ...
+        2. Run ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Hedgerow version
+      description: The release you installed, or the commit if you built it yourself.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: database
+    attributes:
+      label: Database and version
+      placeholder: MySQL 8.4
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, error text, or the SQL involved. Remove passwords and private data first.
