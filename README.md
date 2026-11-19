@@ -31,7 +31,22 @@ pnpm dev
 `pnpm dev` opens the app with hot reload. `pnpm build` produces the production bundle in `out/`, and
 `pnpm start` runs that bundle.
 
-Installers are not set up yet.
+The repository pins its pnpm version in `package.json`. An older pnpm 11 switches to it by itself; pnpm
+11.11 on its own hangs while installing.
+
+### Build an installer
+
+```sh
+pnpm dist
+```
+
+This builds an installer for the operating system you run it on and puts it in `dist/`: an `.exe` setup on
+Windows, a `.dmg` on macOS, an AppImage on Linux. `pnpm package` builds the app unpacked instead, which is
+quicker when you only want to try the packaged build.
+
+Only the Windows build has been tested so far. The builds are not code-signed yet, so Windows shows a
+SmartScreen warning before running the installer, and macOS will refuse to open the app until it is signed
+and notarized.
 
 ### A database to try it on
 
