@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Hedgerow">
+  <!--
+    The Hedgerow icon: a hedgehog whose quills are table rows.
+    This is the master artwork. Run `pnpm icons` after editing it to regenerate
+    the PNG and ICO files beside it. icon-small.svg is the simplified drawing
+    used at 32 px and below.
+  -->
+
+  <!-- Tile: hedge green, visible on light and dark desktops -->
+  <rect width="512" height="512" rx="116" fill="#1a4733"/>
+
+  <!-- Feet, tucked behind the body -->
+  <g fill="#e3c99c">
+    <rect x="150" y="366" width="46" height="38" rx="19"/>
+    <rect x="304" y="366" width="46" height="38" rx="19"/>
+  </g>
+
+  <!-- Quills: four table rows, each cut to a point at the back -->
+  <g stroke-width="10" stroke-linejoin="round">
+    <path d="M150 115H296A44 48 0 0 1 340 163H198Z" fill="#a8e6b4" stroke="#a8e6b4"/>
+    <path d="M106 187H356A44 48 0 0 1 400 235H154Z" fill="#8bdba2" stroke="#8bdba2"/>
+    <path d="M80 259H270V307H128Z" fill="#6fd091" stroke="#6fd091"/>
+    <path d="M62 331H270V379H110Z" fill="#55c282" stroke="#55c282"/>
+  </g>
+
+  <!-- Face: the last cell of the bottom two rows -->
+  <path d="M289 288Q289 254 323 254H332C374 254 418 290 446 326Q454 338 446 348C428 368 402 384 366 384H323Q289 384 289 350Z" fill="#f6ecd5"/>
+  <circle cx="318" cy="263" r="15" fill="#e3c99c"/>
+  <circle cx="372" cy="306" r="11" fill="#16201b"/>
+  <circle cx="447" cy="337" r="16" fill="#16201b"/>
+</svg>

@@ -14,6 +14,7 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/renderer/tsconfig.json",
     "test": "vitest run",
+    "icons": "electron scripts/render-icons.cjs",
     "package": "electron-vite build && electron-builder --dir --publish never",
     "dist": "electron-vite build && electron-builder --publish never"
   },

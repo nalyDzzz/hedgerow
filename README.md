@@ -84,6 +84,9 @@ The app is [Electron](https://www.electronjs.org) with TypeScript throughout.
 | `src/main` | The main process: window, saved connections, and the bridge to the drivers |
 | `src/preload` | Exposes the API to the UI as `window.api` |
 | `src/renderer` | The UI: React, Tailwind, CodeMirror, TanStack Table |
+| `build` | The icon artwork (`icon.svg`, and `icon-small.svg` for tiny sizes) and the icon files made from it |
+
+After changing the icon artwork, run `pnpm icons` to regenerate the `.ico` and `.png` files.
 
 Database connections live in a separate process (`src/main/driver-host.ts`), so a slow query or a huge
 result never freezes the window. The UI has no direct access to Node or to passwords.

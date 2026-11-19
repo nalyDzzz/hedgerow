@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, Menu, nativeTheme, shell } from 'electron'
 import { APP_NAME } from '@shared/app'
+import windowIcon from '../../build/icon.png?asset'
 import { ConnectionStore } from './connection-store'
 import { DriverHost } from './driver-host-client'
 import { registerIpc, TITLE_BAR_HEIGHT } from './ipc'
@@ -17,6 +18,8 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 560,
     show: false,
+    // macOS takes the icon from the app bundle; elsewhere the window carries it.
+    ...(process.platform === 'darwin' ? {} : { icon: windowIcon }),
     backgroundColor: dark ? '#14161b' : '#ffffff',
     titleBarStyle: 'hidden',
     titleBarOverlay:

@@ -12,13 +12,19 @@ const THEMES: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
   { mode: 'dark', label: 'Dark', icon: Moon },
 ]
 
-/** A table with one selected cell: the app in one glyph. */
+/**
+ * The hedgehog from the app icon (build/icon-small.svg) in one color, without its
+ * tile. It stays neutral because the only strong color in the chrome is the
+ * connection's.
+ */
 function AppMark() {
   return (
-    <svg viewBox="0 0 16 16" className="size-4 shrink-0" aria-hidden="true">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.55" />
-      <path d="M1.5 6.2h13M6 2.5v11" stroke="currentColor" strokeWidth="1.2" opacity="0.55" />
-      <rect x="6.6" y="6.8" width="7.3" height="3.1" rx="0.6" fill="var(--tint)" />
+    <svg viewBox="48 88 432 336" className="h-[14px] w-[18px] shrink-0" fill="currentColor" aria-hidden="true">
+      <path d="M144 104H296A40 64 0 0 1 336 168H176Z" opacity="0.5" />
+      <path d="M96 200H360A40 64 0 0 1 400 264H128Z" opacity="0.65" />
+      <path d="M64 296H264V360H96Z" opacity="0.8" />
+      <path d="M280 308Q280 272 316 272H330C378 272 426 308 458 346Q468 360 458 372C438 394 408 408 368 408H316Q280 408 280 372Z" />
+      <circle cx="368" cy="328" r="19" fill="var(--card)" />
     </svg>
   )
 }

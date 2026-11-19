@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Hedgerow">
+  <!--
+    The Hedgerow icon redrawn for 32 px and below: three thicker rows instead of
+    four, a larger face, no feet or ear. Shapes sit on a 32-unit grid so edges
+    land on whole pixels at 16 px.
+  -->
+  <rect width="512" height="512" rx="116" fill="#1a4733"/>
+
+  <path d="M144 104H296A40 64 0 0 1 336 168H176Z" fill="#a8e6b4"/>
+  <path d="M96 200H360A40 64 0 0 1 400 264H128Z" fill="#86d99e"/>
+  <path d="M64 296H264V360H96Z" fill="#62c98a"/>
+
+  <path d="M280 308Q280 272 316 272H330C378 272 426 308 458 346Q468 360 458 372C438 394 408 408 368 408H316Q280 408 280 372Z" fill="#f6ecd5"/>
+  <circle cx="368" cy="328" r="17" fill="#16201b"/>
+  <circle cx="456" cy="358" r="21" fill="#16201b"/>
+</svg>

@@ -19,7 +19,9 @@ files:
 # No native modules, so there is nothing to recompile for Electron.
 npmRebuild: false
 
+# Icons are generated from build/icon.svg by `pnpm icons`.
 win:
+  icon: build/icon.ico
   target:
     - nsis
 
@@ -29,12 +31,14 @@ nsis:
   allowToChangeInstallationDirectory: true
 
 mac:
+  icon: build/icon-mac.png
   category: public.app-category.developer-tools
   target:
     - dmg
     - zip
 
 linux:
+  icon: build/icon.png
   category: Development
   target:
     - AppImage
