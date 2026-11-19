@@ -1,9 +1,11 @@
-# SQL Management Editor
+# Hedgerow
 
 An open-source desktop SQL client for Windows, macOS and Linux. No paid tier, no locked features.
 
-The name is a working title. The project is early: MySQL works today, and the driver layer is built so
-PostgreSQL, SQLite and others can be added without touching the UI.
+A hedgerow is a row of shrubs that divides fields. A database table is rows and fields.
+
+The project is early: MySQL works today, and the driver layer is built so PostgreSQL, SQLite and others can
+be added without touching the UI.
 
 ## What works
 
@@ -51,8 +53,8 @@ and notarized.
 ### A database to try it on
 
 ```sh
-docker run -d --name sme-mysql-dev -e MYSQL_ROOT_PASSWORD=devpass -p 127.0.0.1:3307:3306 mysql:8.4
-docker exec -i sme-mysql-dev mysql -uroot -pdevpass < dev/sample-data.sql
+docker run -d --name hedgerow-mysql-dev -e MYSQL_ROOT_PASSWORD=devpass -p 127.0.0.1:3307:3306 mysql:8.4
+docker exec -i hedgerow-mysql-dev mysql -uroot -pdevpass < dev/sample-data.sql
 ```
 
 Then add a connection to `127.0.0.1`, port `3307`, user `root`, password `devpass`. The sample data is a
@@ -98,7 +100,7 @@ Return anything that would lose precision as a string.
 
 ## License
 
-Copyright (C) 2026 the SQL Management Editor contributors.
+Copyright (C) 2026 the Hedgerow contributors.
 
 Licensed under the [GNU General Public License, version 3](LICENSE). You are free to use, study, change and
 share this program. If you distribute it, changed or not, you must do so under the same license and make the

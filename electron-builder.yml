@@ -1,9 +1,11 @@
 # Packaging. `pnpm dist` builds an installer for the operating system it runs on.
 
-# Placeholder, like the product name. Settle both before the first public release:
-# changing appId later makes Windows and macOS treat the app as a different one.
-appId: dev.sql-management-editor.app
-productName: SQL Management Editor
+# The product name comes from "productName" in package.json.
+#
+# appId identifies the app to the operating system. It is free to change until the
+# first public release; after that, changing it makes Windows and macOS treat the
+# app as a different one. Match it to a domain or account you control if you have one.
+appId: dev.hedgerow.app
 
 directories:
   output: dist

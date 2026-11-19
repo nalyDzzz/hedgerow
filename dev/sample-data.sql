@@ -1,6 +1,6 @@
 -- Sample database for developing and trying out the app.
 -- Load it into a local MySQL server:
---   docker exec -i sme-mysql-dev mysql -uroot -pdevpass < dev/sample-data.sql
+--   docker exec -i hedgerow-mysql-dev mysql -uroot -pdevpass < dev/sample-data.sql
 
 DROP DATABASE IF EXISTS shop;
 CREATE DATABASE shop CHARACTER SET utf8mb4;

@@ -1,2 +1,5 @@
-/** Working title. Change it here and in package.json when the project gets a real name. */
-export const APP_NAME = 'SQL Management Editor'
+/**
+ * A hedgerow is a row of shrubs that divides fields; a table is rows and fields.
+ * The same name is set as `productName` in package.json, which the installers use.
+ */
+export const APP_NAME = 'Hedgerow'

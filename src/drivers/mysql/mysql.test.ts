@@ -1,7 +1,7 @@
 /**
  * Runs against a real MySQL server. Skipped unless TEST_MYSQL_PORT is set:
  *
- *   docker run -d --name sme-mysql-dev -e MYSQL_ROOT_PASSWORD=devpass -p 127.0.0.1:3307:3306 mysql:8.4
+ *   docker run -d --name hedgerow-mysql-dev -e MYSQL_ROOT_PASSWORD=devpass -p 127.0.0.1:3307:3306 mysql:8.4
  *   TEST_MYSQL_PORT=3307 TEST_MYSQL_PASSWORD=devpass pnpm test
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -17,7 +17,7 @@ const params: ConnectionParams = {
   tls: 'disabled',
 }
 
-const DB = 'sme_driver_test'
+const DB = 'hedgerow_driver_test'
 const options = { rowLimit: 1000 }
 
 function rows(result: unknown): RowsResult {
