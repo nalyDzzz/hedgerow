@@ -1,0 +1,38 @@
+# Packaging. `pnpm dist` builds an installer for the operating system it runs on.
+
+# Placeholder, like the product name. Settle both before the first public release:
+# changing appId later makes Windows and macOS treat the app as a different one.
+appId: dev.sql-management-editor.app
+productName: SQL Management Editor
+
+directories:
+  output: dist
+
+# Only the built bundles ship. Runtime dependencies (the database drivers) are added
+# from package.json "dependencies" automatically.
+files:
+  - out/**
+  - package.json
+
+# No native modules, so there is nothing to recompile for Electron.
+npmRebuild: false
+
+win:
+  target:
+    - nsis
+
+nsis:
+  # A normal installer with a choice of folder, rather than a silent one-click install.
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+
+linux:
+  category: Development
+  target:
+    - AppImage

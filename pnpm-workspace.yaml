@@ -1,0 +1,5 @@
+# electron-winstaller is pulled in by electron-builder for the Squirrel installer
+# format, which this project does not use. Its install script is declined here so
+# installs do not stop to ask about it.
+allowBuilds:
+  electron-winstaller: false

@@ -3,14 +3,18 @@
   "version": "0.1.0",
   "description": "An open-source, cross-platform SQL client.",
   "license": "GPL-3.0-only",
+  "author": "SQL Management Editor contributors",
   "private": true,
+  "packageManager": "pnpm@12.21.0",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/renderer/tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "electron-vite build && electron-builder --dir --publish never",
+    "dist": "electron-vite build && electron-builder --publish never"
   },
   "dependencies": {
     "mysql2": "^3.24.6"
@@ -37,6 +41,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "electron": "^45.3.4",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
     "lucide-react": "^1.75.0",
     "radix-ui": "^1.8.1",
