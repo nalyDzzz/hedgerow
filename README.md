@@ -83,4 +83,8 @@ Return anything that would lose precision as a string.
 
 ## License
 
-Not chosen yet.
+Copyright (C) 2026 the SQL Management Editor contributors.
+
+Licensed under the [GNU General Public License, version 3](LICENSE). You are free to use, study, change and
+share this program. If you distribute it, changed or not, you must do so under the same license and make the
+source available. It comes with no warranty.

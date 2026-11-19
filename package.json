@@ -2,6 +2,7 @@
   "name": "sql-management-editor",
   "version": "0.1.0",
   "description": "An open-source, cross-platform SQL client.",
+  "license": "GPL-3.0-only",
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
