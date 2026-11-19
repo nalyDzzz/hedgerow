@@ -1,0 +1,280 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/*
+ * Design tokens.
+ *
+ * The chrome is deliberately neutral. The only strong color in the app is the
+ * "tint": the color of the connection you are working in. It marks the top of
+ * the window, the active tab, the Run button and focus, so a production
+ * database never looks like a local one.
+ *
+ * Token names follow the shadcn/ui convention so its components drop in.
+ */
+:root {
+  --background: #ffffff;
+  --foreground: #1c1d21;
+  --card: #f6f6f4;
+  --card-foreground: #1c1d21;
+  --popover: #ffffff;
+  --popover-foreground: #1c1d21;
+  --primary: #1c1d21;
+  --primary-foreground: #ffffff;
+  --secondary: #ecece8;
+  --secondary-foreground: #1c1d21;
+  --muted: #ecece8;
+  --muted-foreground: #626875;
+  --accent: #ecece8;
+  --accent-foreground: #1c1d21;
+  --destructive: oklch(0.55 0.2 25);
+  --border: #e2e2dc;
+  --border-strong: #cdcdc5;
+  --input: #cdcdc5;
+  --faint: #9a9fa9;
+  --grid-line: #edede8;
+  --shadow: 0 12px 32px rgb(20 22 27 / 0.14), 0 2px 6px rgb(20 22 27 / 0.08);
+
+  /* Tint: lightness and chroma come from the theme, hue from the connection. */
+  --tint-lightness: 0.54;
+  --tint-chroma: 0.17;
+  --tint-foreground: #ffffff;
+  --conn-h: 250;
+  --conn-c: 0;
+
+  --syn-keyword: oklch(0.48 0.17 300);
+  --syn-string: oklch(0.46 0.12 150);
+  --syn-number: oklch(0.52 0.13 60);
+  --syn-type: oklch(0.48 0.12 240);
+
+  --radius: 6px;
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --background: #14161b;
+  --foreground: #e6e8ee;
+  --card: #191c22;
+  --card-foreground: #e6e8ee;
+  --popover: #1f232b;
+  --popover-foreground: #e6e8ee;
+  --primary: #e6e8ee;
+  --primary-foreground: #14161b;
+  --secondary: #242832;
+  --secondary-foreground: #e6e8ee;
+  --muted: #242832;
+  --muted-foreground: #9099ab;
+  --accent: #242832;
+  --accent-foreground: #e6e8ee;
+  --destructive: oklch(0.72 0.17 25);
+  --border: #2a2f3a;
+  --border-strong: #3b4252;
+  --input: #3b4252;
+  --faint: #646c7e;
+  --grid-line: #20242c;
+  --shadow: 0 16px 40px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.35);
+
+  --tint-lightness: 0.76;
+  --tint-chroma: 0.13;
+  --tint-foreground: #14161b;
+
+  --syn-keyword: oklch(0.78 0.11 300);
+  --syn-string: oklch(0.8 0.1 150);
+  --syn-number: oklch(0.82 0.1 75);
+  --syn-type: oklch(0.8 0.09 225);
+
+  color-scheme: dark;
+}
+
+/* Resolved wherever a hue is set, so one connection row can carry its own color. */
+:root,
+[data-tint] {
+  --tint: oklch(var(--tint-lightness) var(--conn-c) var(--conn-h));
+  --tint-soft: oklch(var(--tint-lightness) var(--conn-c) var(--conn-h) / 0.14);
+  --ring: var(--tint);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-faint: var(--faint);
+  --color-tint: var(--tint);
+  --color-tint-soft: var(--tint-soft);
+  --color-tint-foreground: var(--tint-foreground);
+
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Mono', Menlo, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: var(--radius);
+  --radius-lg: 10px;
+
+  --shadow-popover: var(--shadow);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    /* This is an app window: only data and code are selectable. */
+    user-select: none;
+    cursor: default;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+
+  button {
+    cursor: default;
+  }
+
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--faint);
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      transition-duration: 0s !important;
+      animation-duration: 0s !important;
+    }
+  }
+}
+
+@layer components {
+  .drag {
+    -webkit-app-region: drag;
+  }
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  /* Keeps title bar content clear of the native window buttons on every platform. */
+  .titlebar {
+    --chrome-left: 0px;
+    --chrome-right: 0px;
+    padding-left: max(env(titlebar-area-x, 0px), var(--chrome-left));
+    padding-right: max(
+      calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)),
+      var(--chrome-right)
+    );
+  }
+  [data-platform='darwin'] .titlebar {
+    --chrome-left: 78px;
+  }
+  [data-platform='win32'] .titlebar,
+  [data-platform='linux'] .titlebar {
+    --chrome-right: 140px;
+  }
+
+  .selectable {
+    user-select: text;
+    cursor: text;
+  }
+
+  /* ---------- Results grid ---------- */
+  .grid-row {
+    position: absolute;
+    left: 0;
+    display: flex;
+    height: 28px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .grid-cell {
+    flex: none;
+    height: 28px;
+    padding: 0 10px;
+    line-height: 27px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    border-right: 1px solid var(--grid-line);
+    border-bottom: 1px solid var(--grid-line);
+  }
+  .grid-row[data-selected='true'] .grid-cell {
+    background: color-mix(in oklab, var(--tint-soft) 45%, transparent);
+  }
+  .grid-row .grid-cell[data-selected='true'] {
+    background: var(--tint-soft);
+    box-shadow: inset 0 0 0 1.5px var(--tint);
+  }
+  .grid-gutter {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    flex: none;
+    width: 56px;
+    height: 28px;
+    padding: 0 10px;
+    line-height: 27px;
+    text-align: right;
+    color: var(--faint);
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--grid-line);
+    font-variant-numeric: tabular-nums;
+  }
+  .grid-row[data-selected='true'] .grid-gutter {
+    color: var(--foreground);
+  }
+  .cell-null {
+    color: var(--faint);
+    font-style: italic;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  .cell-number {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+}
