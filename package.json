@@ -5,6 +5,14 @@
   "description": "An open-source, cross-platform SQL client.",
   "license": "GPL-3.0-only",
   "author": "Hedgerow contributors",
+  "homepage": "https://github.com/nalyDzzz/hedgerow",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nalyDzzz/hedgerow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nalyDzzz/hedgerow/issues"
+  },
   "private": true,
   "packageManager": "pnpm@12.21.0",
   "main": "./out/main/index.js",

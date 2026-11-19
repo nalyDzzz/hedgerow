@@ -1,8 +1,16 @@
+<p align="center">
+  <img src="build/icon.png" width="96" alt="">
+</p>
+
 # Hedgerow
+
+[![CI](https://github.com/nalyDzzz/hedgerow/actions/workflows/ci.yml/badge.svg)](https://github.com/nalyDzzz/hedgerow/actions/workflows/ci.yml)
 
 An open-source desktop SQL client for Windows, macOS and Linux. No paid tier, no locked features.
 
 A hedgerow is a row of shrubs that divides fields. A database table is rows and fields.
+
+![Hedgerow showing query results, with a JSON value opened beside the grid](docs/screenshot-light.png)
 
 The project is early: MySQL works today, and the driver layer is built so PostgreSQL, SQLite and others can
 be added without touching the UI.
@@ -21,9 +29,18 @@ be added without touching the UI.
 Values are shown exactly as stored: large integers and decimals keep every digit, and dates are not
 shifted into your timezone.
 
-## Run it
+![The same table in the dark theme, in a connection marked red](docs/screenshot-dark.png)
 
-You need [Node.js](https://nodejs.org) 24 and [pnpm](https://pnpm.io) 11, the versions it is developed on.
+Each connection has a color. This one is marked red, so there is no mistaking it for a local database.
+
+## Get it
+
+There is no packaged release yet. Until there is, build it from source as described below.
+
+## Run it from source
+
+You need [Node.js](https://nodejs.org) 24 and [pnpm](https://pnpm.io). The repository pins its pnpm version
+in `package.json`, and pnpm switches to it by itself.
 
 ```sh
 pnpm install
@@ -33,8 +50,15 @@ pnpm dev
 `pnpm dev` opens the app with hot reload. `pnpm build` produces the production bundle in `out/`, and
 `pnpm start` runs that bundle.
 
-The repository pins its pnpm version in `package.json`. An older pnpm 11 switches to it by itself; pnpm
-11.11 on its own hangs while installing.
+### A database to try it on
+
+```sh
+docker run -d --name hedgerow-mysql-dev -e MYSQL_ROOT_PASSWORD=devpass -p 127.0.0.1:3307:3306 mysql:8.4
+docker exec -i hedgerow-mysql-dev mysql -uroot -pdevpass < dev/sample-data.sql
+```
+
+Then add a connection to `127.0.0.1`, port `3307`, user `root`, password `devpass`. The sample data is a
+small shop: customers, products and 2,500 orders with JSON columns.
 
 ### Build an installer
 
@@ -46,19 +70,28 @@ This builds an installer for the operating system you run it on and puts it in `
 Windows, a `.dmg` on macOS, an AppImage on Linux. `pnpm package` builds the app unpacked instead, which is
 quicker when you only want to try the packaged build.
 
-Only the Windows build has been tested so far. The builds are not code-signed yet, so Windows shows a
-SmartScreen warning before running the installer, and macOS will refuse to open the app until it is signed
-and notarized.
+The builds are not code-signed yet, so Windows shows a SmartScreen warning before running the installer, and
+macOS will refuse to open the app until it is signed and notarized.
 
-### A database to try it on
+## Roadmap
 
-```sh
-docker run -d --name hedgerow-mysql-dev -e MYSQL_ROOT_PASSWORD=devpass -p 127.0.0.1:3307:3306 mysql:8.4
-docker exec -i hedgerow-mysql-dev mysql -uroot -pdevpass < dev/sample-data.sql
-```
+Planned, roughly in this order:
 
-Then add a connection to `127.0.0.1`, port `3307`, user `root`, password `devpass`. The sample data is a
-small shop: customers, products and 2,500 orders with JSON columns.
+- Edit cells in the results grid and write the changes back
+- Query history
+- PostgreSQL and SQLite drivers
+- Export results to CSV and JSON
+- Connections through an SSH tunnel
+- Signed installers and automatic updates
+- Optional AI help that uses your own Claude or Codex account
+
+If you would like to take one of these on, open an issue first so the work is not done twice.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to set up,
+what to check before opening a pull request, and what reviewers look for. To report a security problem, see
+[SECURITY.md](SECURITY.md).
 
 ## Checks
 
