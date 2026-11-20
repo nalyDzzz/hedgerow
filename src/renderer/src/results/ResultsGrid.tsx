@@ -261,6 +261,8 @@ export function ResultsGrid({
 }: ResultsGridProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const [editor, setEditor] = useState<(CellRef & { initial: string; typed: boolean }) | null>(null)
+  /** The cell that Edit in the menu was chosen for, until the menu has closed. */
+  const editAfterMenu = useRef<CellRef | null>(null)
   const { rows } = result
   const editing = editable ? result.editing : undefined
 
@@ -423,8 +425,15 @@ export function ResultsGrid({
         return
       case 'Delete':
       case 'Backspace':
+        if (mod) {
+          // With Ctrl or Cmd it is the row that goes, or comes back.
+          if (!editing || !hasKey(selected.row)) return
+          event.preventDefault()
+          onDeleteRow(selected.row, !isDeleted(selected.row))
+          return
+        }
         // Clearing a cell means NULL, where the column allows it.
-        if (mod || !canChange(selected) || !acceptsNull(selected.col)) return
+        if (!canChange(selected) || !acceptsNull(selected.col)) return
         event.preventDefault()
         onStage(selected, null)
         return
@@ -560,15 +569,18 @@ export function ResultsGrid({
 
         {menuCell && menuColumn && (
           <ContextMenuContent
-            // Without this the grid would lose the keyboard when the menu closes.
+            // The menu holds the focus while it is open, so an edit can only start once it has
+            // closed. Otherwise the keyboard goes back to the grid.
             onCloseAutoFocus={(event) => {
               event.preventDefault()
-              if (!document.activeElement?.closest('[data-editor]')) scroller.current?.focus({ preventScroll: true })
+              const cell = editAfterMenu.current
+              editAfterMenu.current = null
+              if (!cell || !startEdit(cell)) scroller.current?.focus({ preventScroll: true })
             }}
           >
             {editing && (
               <>
-                <ContextMenuItem disabled={!canChange(menuCell)} onSelect={() => startEdit(menuCell)}>
+                <ContextMenuItem disabled={!canChange(menuCell)} onSelect={() => (editAfterMenu.current = menuCell)}>
                   <Pencil />
                   Edit
                   <Shortcut>Enter</Shortcut>
@@ -602,6 +614,7 @@ export function ResultsGrid({
                   <ContextMenuItem onSelect={() => onDeleteRow(menuCell.row, false)}>
                     <Undo2 />
                     Keep row
+                    <Shortcut>{shortcut(MOD, 'Del')}</Shortcut>
                   </ContextMenuItem>
                 ) : (
                   <ContextMenuItem
@@ -611,6 +624,7 @@ export function ResultsGrid({
                   >
                     <Trash2 />
                     Delete row
+                    <Shortcut>{shortcut(MOD, 'Del')}</Shortcut>
                   </ContextMenuItem>
                 )}
                 <ContextMenuSeparator />
