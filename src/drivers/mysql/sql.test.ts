@@ -142,6 +142,14 @@ describe('statements for staged changes', () => {
     expect(() => editStatements(request([{ kind: 'delete', key: [] }]), usual)).toThrow(/which row/)
   })
 
+  it('refuses two changes to the same row', () => {
+    const twice = request([
+      { kind: 'update', key: [1], set: [{ column: 1, value: 'first' }] },
+      { kind: 'update', key: [1], set: [{ column: 1, value: 'second' }] },
+    ])
+    expect(() => editStatements(twice, usual)).toThrow(/same row of `items`/)
+  })
+
   it('refuses a change the result does not allow', () => {
     const change = (column: number, value: string | null): EditRequest['changes'] => [
       { kind: 'update', key: [1], set: [{ column, value }] },
