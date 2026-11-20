@@ -23,6 +23,8 @@ be added without touching the UI.
 - Run the statement under the cursor, the selection, or the whole tab; stop a running statement
 - A results grid that stays fast on large results, with resizable columns and keyboard navigation
 - A value panel that formats JSON, including JSON stored in text columns, without altering numbers
+- Edit cells and delete rows in the results grid. Changes are staged, you see the exact SQL before it runs,
+  and a save is one transaction that takes effect only if every statement changes exactly one row
 - A color per connection that tints the window, so production never looks like local
 - Light and dark themes
 
@@ -109,7 +111,9 @@ publish it from the releases page.
 
 Planned, roughly in this order:
 
-- Edit cells in the results grid and write the changes back ([#1](https://github.com/nalyDzzz/hedgerow/issues/1))
+- Filter and sort results from the results screen ([#12](https://github.com/nalyDzzz/hedgerow/issues/12))
+- Add rows from the results grid ([#14](https://github.com/nalyDzzz/hedgerow/issues/14))
+- Change a table's structure from the app ([#11](https://github.com/nalyDzzz/hedgerow/issues/11))
 - Query history ([#2](https://github.com/nalyDzzz/hedgerow/issues/2))
 - PostgreSQL ([#3](https://github.com/nalyDzzz/hedgerow/issues/3)) and SQLite
   ([#4](https://github.com/nalyDzzz/hedgerow/issues/4)) drivers
@@ -168,6 +172,10 @@ result never freezes the window. The UI has no direct access to Node or to passw
 
 A driver returns plain data only: strings, numbers, `null`, and a small summary object for binary values.
 Return anything that would lose precision as a string.
+
+A driver also writes every statement the app generates, because each database quotes names and values its
+own way, and it decides which results can be edited. `src/drivers/mysql/sql.ts` is where MySQL's statements
+are put together.
 
 ## License
 
