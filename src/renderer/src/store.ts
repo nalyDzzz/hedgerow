@@ -68,6 +68,8 @@ interface State {
   /** Connection last touched in the sidebar; decides the tint when no tab is open. */
   focusedConnectionId: string | null
   expanded: Record<string, boolean>
+  /** Key of the sidebar row last clicked. */
+  selectedNode: string | null
   dialog: DialogState
   inspectorOpen: boolean
 
@@ -78,6 +80,7 @@ interface State {
   disconnect(id: string): Promise<void>
   loadSchema(connectionId: string, database: string, force?: boolean): Promise<void>
   toggleNode(key: string, open?: boolean): void
+  selectNode(key: string): void
   focusConnection(id: string): void
 
   newTab(connectionId: string, options?: NewTabOptions): string
@@ -130,6 +133,7 @@ export const useStore = create<State>()((set, get) => {
     activeTabId: null,
     focusedConnectionId: null,
     expanded: {},
+    selectedNode: null,
     dialog: { mode: 'closed' },
     inspectorOpen: false,
 
@@ -226,6 +230,10 @@ export const useStore = create<State>()((set, get) => {
 
     toggleNode(key, open) {
       set((state) => ({ expanded: { ...state.expanded, [key]: open ?? !state.expanded[key] } }))
+    },
+
+    selectNode(key) {
+      set({ selectedNode: key })
     },
 
     focusConnection(id) {
