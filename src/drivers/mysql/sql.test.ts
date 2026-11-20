@@ -1,7 +1,7 @@
 /** How statements are written. These need no server; `mysql.test.ts` runs the same statements against one. */
 import { describe, expect, it } from 'vitest'
 import type { EditRequest, ResultColumn } from '@shared/driver'
-import { editStatements, isQuery, literal, quoteIdentifier, quoteString, tableQuery } from './sql'
+import { editStatements, isEditStatement, isQuery, literal, quoteIdentifier, quoteString, tableQuery } from './sql'
 
 const usual = { backslashEscapes: true }
 const literalBackslash = { backslashEscapes: false }
@@ -78,6 +78,12 @@ describe('binary values', () => {
       /longer than was loaded/,
     )
   })
+
+  it('refuses anything that is not hex', () => {
+    expect(() => literal({ type: 'binary', bytes: 4, preview: "00' OR '" }, token, usual)).toThrow(
+      /cannot be written/,
+    )
+  })
 })
 
 describe('statements for staged changes', () => {
@@ -143,6 +149,26 @@ describe('statements for staged changes', () => {
     expect(() => editStatements(request(change(2, '1'), { editable: [1] }), usual)).toThrow(/`price` cannot be changed/)
     expect(() => editStatements(request(change(2, null)), usual)).toThrow(/`price` does not accept NULL/)
     expect(() => editStatements(request(change(2, 'cheap')), usual)).toThrow(/is not a number/)
+  })
+})
+
+describe('telling a planned change from other statements', () => {
+  it('knows the statements it writes', () => {
+    const request: EditRequest = {
+      columns: [id, title],
+      editing: { table: { database: 'shop', table: 'items' }, key: [0], editable: [1], nullable: [] },
+      changes: [
+        { kind: 'update', key: [1], set: [{ column: 1, value: 'x' }] },
+        { kind: 'delete', key: [2] },
+      ],
+    }
+    expect(editStatements(request, usual).every(isEditStatement)).toBe(true)
+  })
+
+  it('rejects statements that could do more than change a row', () => {
+    expect(isEditStatement('ALTER TABLE items ADD COLUMN x INT')).toBe(false)
+    expect(isEditStatement('SELECT * FROM items')).toBe(false)
+    expect(isEditStatement('DROP TABLE items')).toBe(false)
   })
 })
 

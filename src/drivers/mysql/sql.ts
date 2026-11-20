@@ -43,7 +43,7 @@ export function literal(value: CellValue, column: ResultColumn, mode: SqlMode): 
 
   if (typeof value === 'object') {
     // Only the first bytes of a binary value are loaded. If that is not all of it, the value is unknown.
-    if (value.preview.length !== value.bytes * 2) {
+    if (value.preview.length !== value.bytes * 2 || !/^[0-9a-f]*$/i.test(value.preview)) {
       throw new DriverError(
         `The value of \`${column.name}\` is binary and longer than was loaded, so it cannot be written in a statement.`,
         'VALUE_INCOMPLETE',
@@ -129,6 +129,11 @@ export function editStatements({ columns, editing, changes }: EditRequest, mode:
 
     return `UPDATE ${table} SET ${set} WHERE ${where}`
   })
+}
+
+/** True for a statement `editStatements` writes. A save runs nothing else. */
+export function isEditStatement(sql: string): boolean {
+  return /^(?:UPDATE|DELETE FROM) `/.test(sql)
 }
 
 const LEADING_SPACE_AND_COMMENTS = /^(?:\s+|--[^\n]*(?:\n|$)|#[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/
