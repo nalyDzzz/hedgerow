@@ -273,6 +273,83 @@
     font-size: 11px;
     letter-spacing: 0.04em;
   }
+
+  /*
+   * Unsaved changes. They are marked by shape and weight, not by a color of
+   * their own: the one strong color in the window belongs to the connection.
+   */
+  .grid-cell[data-changed] {
+    position: relative;
+    font-weight: 600;
+    background: color-mix(in oklab, var(--foreground) 9%, transparent);
+  }
+  .grid-cell[data-changed]::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    border-top: 7px solid var(--foreground);
+    border-right: 7px solid transparent;
+  }
+  .grid-row[data-changed] .grid-gutter,
+  .grid-row[data-deleted] .grid-gutter {
+    color: var(--foreground);
+    font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--foreground);
+  }
+  .grid-row[data-deleted] .grid-cell {
+    color: var(--faint);
+    text-decoration: line-through;
+    background: color-mix(in oklab, var(--foreground) 5%, transparent);
+  }
+  .grid-row[data-deleted] .grid-cell * {
+    color: inherit;
+  }
+
+  /* The box that takes a cell's place while it is edited. */
+  .cell-editor {
+    position: absolute;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    background: var(--background);
+    box-shadow: inset 0 0 0 1.5px var(--tint);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .cell-editor input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 10px;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--foreground);
+    font: inherit;
+  }
+  .cell-editor input::placeholder {
+    color: var(--faint);
+    font-style: italic;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  .cell-editor button {
+    flex: none;
+    height: 18px;
+    margin-right: 5px;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-style: italic;
+    letter-spacing: 0.04em;
+  }
+  .cell-editor button:hover {
+    color: var(--foreground);
+    background: var(--border-strong);
+  }
   .cell-number {
     text-align: right;
     font-variant-numeric: tabular-nums;

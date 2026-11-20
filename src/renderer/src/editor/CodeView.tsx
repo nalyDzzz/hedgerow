@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react'
 import { json } from '@codemirror/lang-json'
+import { MySQL, sql } from '@codemirror/lang-sql'
 import { bracketMatching, foldGutter, foldKeymap } from '@codemirror/language'
 import { highlightSelectionMatches } from '@codemirror/search'
 import { EditorState } from '@codemirror/state'
 import { EditorView, drawSelection, keymap, lineNumbers } from '@codemirror/view'
 import { appearance } from './setup'
 
-/** Read-only, selectable, foldable JSON. */
-export function CodeView({ value }: { value: string }) {
+/** Read-only, selectable text with syntax colors: foldable JSON, or SQL. */
+export function CodeView({ value, language = 'json' }: { value: string; language?: 'json' | 'sql' }) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
 
@@ -19,19 +20,19 @@ export function CodeView({ value }: { value: string }) {
         extensions: [
           EditorState.readOnly.of(true),
           EditorView.lineWrapping,
-          lineNumbers(),
-          foldGutter(),
+          // A statement can span lines, so numbered lines would not number statements.
+          ...(language === 'json' ? [lineNumbers(), foldGutter(), json(), keymap.of(foldKeymap)] : [sql({ dialect: MySQL })]),
           drawSelection(),
           bracketMatching(),
           highlightSelectionMatches(),
           appearance,
-          json(),
-          keymap.of(foldKeymap),
         ],
       }),
     })
     view.current = created
     return () => created.destroy()
+    // The language is fixed for the life of a view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {

@@ -1,12 +1,13 @@
-import { useState } from 'react'
-import { CircleAlert, CircleCheck, LoaderCircle, PanelRight } from 'lucide-react'
-import type { ErrorResult, OkResult } from '@shared/driver'
+import { useEffect, useState } from 'react'
+import { CircleAlert, CircleCheck, LoaderCircle, Lock, PanelRight, Pencil } from 'lucide-react'
+import type { ErrorResult, OkResult, RowsResult } from '@shared/driver'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { formatCount, formatDuration, plural } from '@/lib/format'
-import { MOD, cn } from '@/lib/utils'
-import { ROW_LIMITS, useStore, type ResultEntry, type Tab } from '@/store'
+import { MOD, cn, shortcut } from '@/lib/utils'
+import { ROW_LIMITS, countChanges, useStore, type ResultEntry, type Tab } from '@/store'
 import { ResultsGrid } from './ResultsGrid'
+import { SaveChangesDialog, type SavePlan } from './SaveChangesDialog'
 import { ValueInspector } from './ValueInspector'
 
 function Statement({ sql }: { sql: string }) {
@@ -64,14 +65,95 @@ function summary(entry: ResultEntry): string {
   return result.truncated ? `First ${count}` : count
 }
 
+/** Says whether the rows on screen can be changed, and if not, why. */
+function EditingNote({ result, saved }: { result: RowsResult; saved: number | undefined }) {
+  if (saved) {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-muted-foreground" role="status">
+        <CircleCheck className="size-3.5 text-tint" />
+        Saved {plural(saved, 'change')}
+      </span>
+    )
+  }
+  if (result.editing) {
+    const { database, table } = result.editing.table
+    return (
+      <span
+        className="flex shrink-0 items-center gap-1 text-muted-foreground"
+        title={`These are rows of ${database}.${table}. Double-click a cell to change it, or right-click for more. Nothing reaches the database until you save.`}
+      >
+        <Pencil className="size-3" />
+        Editable
+      </span>
+    )
+  }
+  return (
+    <span className="flex shrink-0 items-center gap-1 text-faint" title={result.readOnly}>
+      <Lock className="size-3" />
+      Read-only
+    </span>
+  )
+}
+
 export function ResultsPanel({ tab }: { tab: Tab }) {
   const inspectorOpen = useStore((state) => state.inspectorOpen)
-  const { selectCell, setActiveResult, setInspectorOpen, setRowLimit } = useStore.getState()
+  const connectionName = useStore(
+    (state) => state.connections.find((connection) => connection.id === tab.connectionId)?.name ?? 'this connection',
+  )
+  const {
+    selectCell,
+    setActiveResult,
+    setInspectorOpen,
+    setRowLimit,
+    stageCell,
+    revertCell,
+    setRowDeleted,
+    discardChanges,
+    planSave,
+    save,
+  } = useStore.getState()
   const [inspectorWidth, setInspectorWidth] = useState(380)
+  /** The cell the grid asked the value panel to edit, as "row:column", and which request that was. */
+  const [panelEdit, setPanelEdit] = useState<{ cell: string; request: number } | null>(null)
+  const [plan, setPlan] = useState<SavePlan | null>(null)
 
   const entry = tab.results[tab.activeResult] as ResultEntry | undefined
   const rowsResult = entry?.result.kind === 'rows' ? entry.result : null
   const selected = rowsResult && tab.selected && tab.selected.row < rowsResult.rows.length ? tab.selected : null
+  const staged = entry?.staged
+  const changes = countChanges(staged)
+  const editing = tab.running ? undefined : rowsResult?.editing
+
+  const review = async () => {
+    try {
+      setPlan({ statements: await planSave(tab.id) })
+    } catch (error) {
+      setPlan({ problem: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  // Save is where people expect it, whenever there is something to save.
+  const canSave = changes > 0 && !tab.running && plan === null
+  useEffect(() => {
+    if (!canSave) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        void review()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // `review` only reads the tab id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canSave, tab.id])
+
+  const selectedKey = selected ? `${selected.row}:${selected.col}` : null
+  const editInPanel = panelEdit !== null && panelEdit.cell === selectedKey
+  const showNote = rowsResult !== null && rowsResult.rows.length > 0 && !tab.running && changes === 0
+  const selectedChange = selected ? staged?.cells[selected.row]?.[selected.col] : undefined
+  const selectedDeleted = selected ? Boolean(staged?.deleted[selected.row]) : false
+  const selectedChanged = selectedChange !== undefined && !selectedDeleted
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-background">
@@ -94,6 +176,7 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
                 )}
               >
                 {index + 1}
+                {countChanges(item.staged) > 0 && <span aria-label="Has unsaved changes">*</span>}
               </button>
             ))}
             <div className="mx-1 h-3.5 w-px bg-border" />
@@ -107,7 +190,7 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
           </span>
         ) : entry ? (
           <span className="flex min-w-0 items-center gap-2">
-            <span className={cn('font-medium', entry.result.kind === 'error' && 'text-destructive')}>
+            <span className={cn('shrink-0 font-medium', entry.result.kind === 'error' && 'text-destructive')}>
               {summary(entry)}
             </span>
             {rowsResult?.truncated && (
@@ -124,6 +207,32 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
         )}
 
         <div className="flex-1" />
+
+        {showNote && <EditingNote result={rowsResult} saved={entry?.saved} />}
+        {changes > 0 && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="font-medium">{plural(changes, 'unsaved change')}</span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={tab.running}
+              title="Put the grid back to what the database holds"
+              onClick={() => discardChanges(tab.id)}
+            >
+              Discard
+            </Button>
+            <Button
+              size="sm"
+              variant="tint"
+              disabled={tab.running}
+              title={`See the statements, then save (${shortcut(MOD, 'S')})`}
+              onClick={() => void review()}
+            >
+              Save…
+            </Button>
+          </div>
+        )}
+        {(showNote || changes > 0) && <div className="mx-0.5 h-3.5 w-px shrink-0 bg-border" />}
 
         <label className="flex shrink-0 items-center gap-1.5 text-muted-foreground" title="Applies from the next run">
           Limit
@@ -178,11 +287,24 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
           ) : (
             <ResultsGrid
               // A new result is a new grid: column widths and scroll position start over.
-              key={`${tab.id}:${tab.activeResult}:${entry.result.durationMs}`}
+              // Rows reloaded after a save keep their entry, and so their place.
+              key={`${tab.id}:${entry.id}`}
               result={entry.result}
               selected={selected}
-              onSelect={(cell) => selectCell(tab.id, cell)}
+              staged={staged}
+              editable={!tab.running}
+              onSelect={(cell) => {
+                setPanelEdit(null)
+                selectCell(tab.id, cell)
+              }}
               onOpen={() => setInspectorOpen(true)}
+              onEditInPanel={(cell) => {
+                setPanelEdit((last) => ({ cell: `${cell.row}:${cell.col}`, request: (last?.request ?? 0) + 1 }))
+                setInspectorOpen(true)
+              }}
+              onStage={(cell, value) => stageCell(tab.id, cell, value)}
+              onRevert={(cell) => revertCell(tab.id, cell)}
+              onDeleteRow={(row, deleted) => setRowDeleted(tab.id, row, deleted)}
             />
           )}
         </div>
@@ -193,9 +315,21 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
             <div className="shrink-0" style={{ width: inspectorWidth }}>
               {selected ? (
                 <ValueInspector
-                  key={`${selected.row}:${selected.col}`}
+                  // Remounts for another cell, and each time the grid asks to edit this one.
+                  key={`${entry?.id}:${selectedKey}:${editInPanel ? panelEdit.request : 0}`}
                   column={rowsResult.columns[selected.col]}
-                  value={rowsResult.rows[selected.row][selected.col]}
+                  value={selectedChanged ? selectedChange : rowsResult.rows[selected.row][selected.col]}
+                  changed={selectedChanged}
+                  editable={
+                    Boolean(editing?.editable.includes(selected.col)) &&
+                    !selectedDeleted &&
+                    editing!.key.every((col) => rowsResult.rows[selected.row][col] !== null)
+                  }
+                  nullable={Boolean(editing?.nullable.includes(selected.col))}
+                  startEditing={editInPanel}
+                  onStage={(value) => stageCell(tab.id, selected, value)}
+                  onEditEnd={() => setPanelEdit(null)}
+                  onRevert={() => revertCell(tab.id, selected)}
                   onClose={() => setInspectorOpen(false)}
                 />
               ) : (
@@ -207,6 +341,17 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
           </>
         )}
       </div>
+
+      {plan && rowsResult?.editing && (
+        <SaveChangesDialog
+          plan={plan}
+          table={rowsResult.editing.table}
+          connection={connectionName}
+          changes={changes}
+          onSave={(statements) => save(tab.id, statements)}
+          onClose={() => setPlan(null)}
+        />
+      )}
     </section>
   )
 }
