@@ -51,6 +51,9 @@ const handlers: Handlers = {
   setDatabase: (sessionId, database) => session(sessionId).setDatabase(database),
   execute: (sessionId, sql, options) => session(sessionId).execute(sql, options),
   cancel: (sessionId) => session(sessionId).cancel(),
+  tableQuery: (sessionId, table) => session(sessionId).tableQuery(table),
+  planEdits: (sessionId, request) => session(sessionId).planEdits(request),
+  applyEdits: (sessionId, statements) => session(sessionId).applyEdits(statements),
 }
 
 process.parentPort.on('message', async (event) => {

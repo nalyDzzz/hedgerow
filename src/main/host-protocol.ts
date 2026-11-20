@@ -5,9 +5,12 @@
 import type {
   ConnectionParams,
   DriverId,
+  EditRequest,
   ExecuteOptions,
+  SaveResult,
   StatementResult,
   TableInfo,
+  TableRef,
 } from '@shared/driver'
 
 export interface HostMethods {
@@ -23,6 +26,9 @@ export interface HostMethods {
   setDatabase(sessionId: string, database: string): void
   execute(sessionId: string, sql: string, options: ExecuteOptions): StatementResult
   cancel(sessionId: string): void
+  tableQuery(sessionId: string, table: TableRef): string
+  planEdits(sessionId: string, request: EditRequest): string[]
+  applyEdits(sessionId: string, statements: string[]): SaveResult
 }
 
 export type HostMethod = keyof HostMethods
