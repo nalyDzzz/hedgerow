@@ -13,7 +13,7 @@ import { SqlEditor, focusEditor, runAllStatements, runCurrentStatement } from '@
 import { tintStyle } from '@/lib/hues'
 import { MOD, cn } from '@/lib/utils'
 import { ResultsPanel } from '@/results/ResultsPanel'
-import { SYSTEM_DATABASES, useStore, type Tab } from '@/store'
+import { SYSTEM_DATABASES, countChanges, useStore, type Tab } from '@/store'
 import { ResizeHandle } from './ResizeHandle'
 
 function TabStrip() {
@@ -55,6 +55,11 @@ function TabStrip() {
               <span className="size-1.5 shrink-0 rounded-full bg-tint" />
             )}
             <span className="truncate">{tab.title}</span>
+            {tab.results.some((entry) => countChanges(entry.staged) > 0) && (
+              <span className="-ml-0.5 shrink-0 font-semibold" title="Has unsaved changes" aria-label="Has unsaved changes">
+                *
+              </span>
+            )}
             <button
               title={`Close (${MOD}+W)`}
               aria-label={`Close ${tab.title}`}
