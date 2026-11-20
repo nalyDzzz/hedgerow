@@ -237,6 +237,10 @@ describe.skipIf(!port)('mysql driver', () => {
       await run('CREATE TABLE tokens (id BINARY(4) PRIMARY KEY, label VARCHAR(10))')
       await run("INSERT INTO tokens VALUES (x'00010203', 'old')")
       await run('CREATE VIEW people_view AS SELECT id, email FROM people')
+      await run('CREATE TABLE digests (digest VARBINARY(64) PRIMARY KEY, label VARCHAR(10))')
+      await run("INSERT INTO digests VALUES (REPEAT(x'AB', 40), 'long'), (x'01', 'short')")
+      await run('CREATE TABLE files (digest VARBINARY(64) PRIMARY KEY, code INT NOT NULL, UNIQUE KEY files_code (code))')
+      await run("INSERT INTO files VALUES (REPEAT(x'CD', 40), 1)")
     })
 
     it('offers editing for rows read from one table with its primary key', async () => {
@@ -314,6 +318,28 @@ describe.skipIf(!port)('mysql driver', () => {
         'SELECT people.* FROM people JOIN order_lines l ON l.order_id = people.id + 6 WHERE l.line_no = 1',
       )
       expect(result.editing).toMatchObject({ table: { database: DB, table: 'people' }, key: [0] })
+    })
+
+    it('stays read-only when a join returns a row of the table more than once', async () => {
+      // Person 1 has two order lines, so she appears twice. Typing a different name into each
+      // copy would otherwise save both, and the second would silently replace the first.
+      const result = await select('SELECT people.* FROM people JOIN order_lines l ON l.order_id = people.id + 6')
+      expect(result.rows.map((row) => row[0])).toEqual([1, 1])
+      expect(result.editing).toBeUndefined()
+      expect(result.readOnly).toMatch(/rows of `people` appear more than once/)
+    })
+
+    it('does not offer a binary key that was only loaded in part', async () => {
+      // Every save would fail: the row could not be named in a statement.
+      const result = await select('SELECT * FROM digests')
+      expect(result.editing).toBeUndefined()
+      expect(result.readOnly).toMatch(/binary value longer than the 32 bytes/)
+
+      // While every key on screen was loaded whole, the rows can be found again.
+      expect((await select("SELECT * FROM digests WHERE label = 'short'")).editing).toMatchObject({ key: [0] })
+
+      // And another key of the table will do instead.
+      expect((await select('SELECT * FROM files')).editing).toMatchObject({ key: [1] })
     })
 
     it('writes the statement that opens a table', async () => {

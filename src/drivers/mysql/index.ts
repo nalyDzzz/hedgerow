@@ -27,6 +27,8 @@ import { editStatements, isEditStatement, isQuery, quoteIdentifier, tableQuery, 
 const HARD_ROW_CAP = 100_000
 
 const BINARY_CHARSET = 63
+/** How much of a binary value is loaded. A longer one is known only by its start. */
+const BINARY_PREVIEW_BYTES = 32
 const FLAG_NOT_NULL = 1
 const FLAG_PRIMARY_KEY = 2
 const FLAG_UNSIGNED = 32
@@ -158,7 +160,7 @@ function toBinaryCell(buffer: Buffer): BinaryCell {
   return {
     type: 'binary',
     bytes: buffer.length,
-    preview: buffer.subarray(0, 32).toString('hex'),
+    preview: buffer.subarray(0, BINARY_PREVIEW_BYTES).toString('hex'),
   }
 }
 
@@ -271,6 +273,25 @@ function rowsReached(header: OkHeader): number {
   return matched ? Number(matched[1]) : (header.affectedRows ?? 0)
 }
 
+/** True for a binary value that was only loaded in part, so that its whole value is not known. */
+function isCutShort(value: CellValue): boolean {
+  return typeof value === 'object' && value !== null && value.preview.length !== value.bytes * 2
+}
+
+/** True when two rows carry the same key, which means the result holds one row of the table twice. */
+function repeatsKey(rows: CellValue[][], key: number[]): boolean {
+  const seen = new Set<string>()
+  for (const row of rows) {
+    const values = key.map((index) => row[index])
+    // An outer join can return many rows with no key at all. None of them can be edited anyway.
+    if (values.includes(null)) continue
+    const id = JSON.stringify(values)
+    if (seen.has(id)) return true
+    seen.add(id)
+  }
+  return false
+}
+
 function nameList(names: string[]): string {
   const quoted = names.map((name) => `\`${name}\``)
   return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}` : quoted.join('')
@@ -375,7 +396,7 @@ class MysqlSession implements DriverSession {
       const { fields, ...rows } = outcome
       // Looked up after the clock stops: it is our question, not part of the statement.
       // The statement itself succeeded, so nothing that goes wrong here may turn it into a failure.
-      const editing = await this.describeEditing(sql, fields, rows.columns).catch(() => ({
+      const editing = await this.describeEditing(sql, fields, rows.columns, rows.rows).catch(() => ({
         readOnly: 'It could not be worked out whether these rows can be edited.',
       }))
       return { ...rows, ...editing, durationMs, database: this.currentDatabase }
@@ -540,6 +561,7 @@ class MysqlSession implements DriverSession {
     sql: string,
     fields: FieldLike[],
     columns: ResultColumn[],
+    rows: CellValue[][],
   ): Promise<Pick<RowsResult, 'editing' | 'readOnly'>> {
     if (!isQuery(sql)) return { readOnly: 'Only the rows of a SELECT can be edited.' }
 
@@ -582,6 +604,7 @@ class MysqlSession implements DriverSession {
     }
 
     let copied = false
+    let cutShort = false
     for (const key of usable) {
       const found = key.parts.map((part) => find(part.column!))
       if (found.some((index) => index === undefined)) continue
@@ -591,6 +614,20 @@ class MysqlSession implements DriverSession {
       if (!keyColumns.every((index) => flagsOf(fields[index]) & FLAG_PART_OF_KEY)) {
         copied = true
         continue
+      }
+      // A binary key identifies a row only if all of it was loaded, for every row.
+      if (rows.some((row) => keyColumns.some((index) => isCutShort(row[index])))) {
+        cutShort = true
+        continue
+      }
+      // A join can return one row of the table several times. Each copy could then be given
+      // a different value, and the save would keep the last one and say nothing.
+      if (repeatsKey(rows, keyColumns)) {
+        return {
+          readOnly:
+            `Some rows of \`${table.table}\` appear more than once here, as a join can make them. ` +
+            'Rows can be edited when each appears once.',
+        }
       }
       const editable = stored.filter(
         (index) =>
@@ -606,6 +643,13 @@ class MysqlSession implements DriverSession {
       }
     }
 
+    if (cutShort) {
+      return {
+        readOnly:
+          `The key of \`${table.table}\` is a binary value longer than the ${BINARY_PREVIEW_BYTES} bytes that ` +
+          'are loaded of it, so a row could not be found again.',
+      }
+    }
     if (copied) {
       return {
         readOnly:

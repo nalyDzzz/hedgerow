@@ -88,10 +88,21 @@ export function editStatements({ columns, editing, changes }: EditRequest, mode:
     return quoteIdentifier(source.column)
   }
 
+  const changed = new Set<string>()
+
   return changes.map((change) => {
     if (change.key.length !== editing.key.length) {
       throw new DriverError('A change does not say which row it is for.', 'BAD_CHANGE')
     }
+    // Two statements for one row would both succeed, and the second would undo part of the first.
+    const row = JSON.stringify(change.key)
+    if (changed.has(row)) {
+      throw new DriverError(
+        `Two of these changes are to the same row of \`${editing.table.table}\`, so one would overwrite the other.`,
+        'BAD_CHANGE',
+      )
+    }
+    changed.add(row)
     const where = editing.key
       .map((index, position) => {
         const value = change.key[position]
