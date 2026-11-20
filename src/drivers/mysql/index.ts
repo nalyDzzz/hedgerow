@@ -8,12 +8,17 @@ import type {
   ConnectionParams,
   Driver,
   DriverSession,
+  EditRequest,
   ExecuteOptions,
   ResultColumn,
+  RowsResult,
+  SaveResult,
   StatementResult,
   TableInfo,
+  TableRef,
 } from '@shared/driver'
 import { DriverError } from '../error'
+import { editStatements, isQuery, quoteIdentifier, tableQuery, type SqlMode } from './sql'
 
 /**
  * Upper bound on rows held for one statement, whatever LIMIT it asks for.
@@ -22,11 +27,16 @@ import { DriverError } from '../error'
 const HARD_ROW_CAP = 100_000
 
 const BINARY_CHARSET = 63
+const FLAG_NOT_NULL = 1
 const FLAG_PRIMARY_KEY = 2
 const FLAG_UNSIGNED = 32
 const FLAG_ENUM = 256
 const FLAG_SET = 2048
+/** Set on a column that belongs to an index, as long as the row comes straight from the table. */
+const FLAG_PART_OF_KEY = 16384
 const ER_QUERY_INTERRUPTED = 1317
+/** Bit of the status the server sends with every answer: a transaction is open. */
+const STATUS_IN_TRANSACTION = 1
 
 /** MySQL protocol column type codes mapped to a display name and a kind. */
 const COLUMN_TYPES: Record<number, [dbType: string, kind: ColumnKind]> = {
@@ -73,7 +83,32 @@ interface FieldLike {
   columnType?: number
   flags?: number | string[]
   characterSet?: number
+  /** The name the query used for the table, which may be an alias. */
   table?: string
+  orgTable?: string
+  /** The column's name in its table, whatever the query called it. */
+  orgName?: string
+  /** The database the table is in. */
+  schema?: string
+}
+
+/** What the server answers to a statement that returns no rows. */
+interface OkHeader {
+  affectedRows?: number
+  insertId?: number | string
+  info?: string
+  serverStatus?: number
+  warningStatus?: number
+}
+
+/** The keys and columns of one table, as far as editing needs them. */
+interface TableShape {
+  /** Every column, in lower case. */
+  columns: Set<string>
+  /** Columns the server computes, which cannot be assigned. */
+  generated: Set<string>
+  /** Unique indexes. A part with no column is an expression. */
+  keys: { name: string; parts: { column: string | null; nullable: boolean }[] }[]
 }
 
 interface MysqlError extends Error {
@@ -84,7 +119,7 @@ interface MysqlError extends Error {
 
 function toColumn(field: FieldLike): ResultColumn {
   const code = field.columnType ?? -1
-  const flags = typeof field.flags === 'number' ? field.flags : 0
+  const flags = flagsOf(field)
   const binary = field.characterSet === BINARY_CHARSET
   let [dbType, kind] = COLUMN_TYPES[code] ?? ['UNKNOWN', 'other' as ColumnKind]
 
@@ -102,13 +137,21 @@ function toColumn(field: FieldLike): ResultColumn {
     dbType += ' UNSIGNED'
   }
 
-  return {
+  const column: ResultColumn = {
     name: field.name,
     dbType,
     kind,
     table: field.table || undefined,
     primaryKey: (flags & FLAG_PRIMARY_KEY) !== 0,
   }
+  if (field.schema && field.orgTable && field.orgName) {
+    column.source = { database: field.schema, table: field.orgTable, column: field.orgName }
+  }
+  return column
+}
+
+function flagsOf(field: FieldLike): number {
+  return typeof field.flags === 'number' ? field.flags : 0
 }
 
 function toBinaryCell(buffer: Buffer): BinaryCell {
@@ -205,12 +248,36 @@ function queryRows(connection: Connection, sql: string, values: unknown[] = []):
   })
 }
 
-function quoteIdentifier(name: string): string {
-  return `\`${name.replaceAll('`', '``')}\``
+/** Runs a statement that must not return rows, and gives back the server's answer to it. */
+function runCommand(connection: Connection, sql: string): Promise<OkHeader> {
+  return new Promise((resolve, reject) => {
+    connection.query(sql, (error, result) => {
+      if (error) reject(error)
+      else if (Array.isArray(result)) {
+        reject(new DriverError('It returns rows instead of changing one.', 'NOT_A_CHANGE'))
+      } else resolve(result as OkHeader)
+    })
+  })
+}
+
+/**
+ * How many rows a statement reached. This connection counts rows changed, so an
+ * UPDATE that finds its row already holding the new value counts none; the
+ * server's message says how many it matched. A server set to another language
+ * words that message differently, and then rows changed is what there is.
+ */
+function rowsReached(header: OkHeader): number {
+  const matched = /^Rows matched: (\d+)/.exec(header.info ?? '')
+  return matched ? Number(matched[1]) : (header.affectedRows ?? 0)
+}
+
+function nameList(names: string[]): string {
+  const quoted = names.map((name) => `\`${name}\``)
+  return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}` : quoted.join('')
 }
 
 type Outcome =
-  | { kind: 'rows'; columns: ResultColumn[]; rows: CellValue[][]; truncated: boolean }
+  | { kind: 'rows'; columns: ResultColumn[]; fields: FieldLike[]; rows: CellValue[][]; truncated: boolean }
   | { kind: 'ok'; affectedRows: number; insertId?: string; info?: string }
 
 class MysqlSession implements DriverSession {
@@ -299,11 +366,16 @@ class MysqlSession implements DriverSession {
 
       if (/^\s*use\s/i.test(sql)) await this.refreshDatabase()
 
-      if (outcome.kind === 'rows' && !outcome.truncated && outcome.rows.length === options.rowLimit + 1) {
+      if (outcome.kind === 'ok') return { ...outcome, durationMs, database: this.currentDatabase }
+
+      if (!outcome.truncated && outcome.rows.length === options.rowLimit + 1) {
         outcome.rows.pop()
         outcome.truncated = true
       }
-      return { ...outcome, durationMs, database: this.currentDatabase }
+      const { fields, ...rows } = outcome
+      // Looked up after the clock stops: it is our question, not part of the statement.
+      const editing = await this.describeEditing(sql, fields, rows.columns)
+      return { ...rows, ...editing, durationMs, database: this.currentDatabase }
     } catch (error) {
       this.running = false
       const failure = error as MysqlError
@@ -328,6 +400,85 @@ class MysqlSession implements DriverSession {
       await queryRows(side, `KILL QUERY ${Number(threadId)}`)
     } finally {
       side.destroy()
+    }
+  }
+
+  async tableQuery(table: TableRef): Promise<string> {
+    return tableQuery(table)
+  }
+
+  async planEdits(request: EditRequest): Promise<string[]> {
+    this.assertOpen()
+    let mode: SqlMode
+    try {
+      const rows = await queryRows(this.connection, 'SELECT @@SESSION.sql_mode')
+      mode = { backslashEscapes: !String(rows[0]?.[0] ?? '').toUpperCase().includes('NO_BACKSLASH_ESCAPES') }
+    } catch (error) {
+      throw describeError(error as MysqlError, this.params)
+    }
+    return editStatements(request, mode)
+  }
+
+  async applyEdits(statements: string[]): Promise<SaveResult> {
+    const started = performance.now()
+    const elapsed = () => Math.round((performance.now() - started) * 10) / 10
+    let inTransaction = false
+    /** The statement being run, while one is. */
+    let at: number | undefined
+    try {
+      this.assertOpen()
+      this.running = true
+      this.cancelRequested = false
+
+      // START TRANSACTION would quietly commit a transaction this session already has open.
+      const before = await runCommand(this.connection, 'DO 0')
+      if ((before.serverStatus ?? 0) & STATUS_IN_TRANSACTION) {
+        throw new DriverError(
+          'This tab has a transaction open, or autocommit is off. Commit or roll back first, then save again.',
+          'IN_TRANSACTION',
+        )
+      }
+
+      await runCommand(this.connection, 'START TRANSACTION')
+      inTransaction = true
+      for (const [index, sql] of statements.entries()) {
+        at = index
+        if (this.cancelRequested) {
+          throw Object.assign(new Error('Query execution was interrupted'), { code: 'ER_QUERY_INTERRUPTED' })
+        }
+        const header = await runCommand(this.connection, sql)
+        // A lenient server stores a value it had to cut or change and only warns about it.
+        if (header.warningStatus) {
+          const warnings = await queryRows(this.connection, 'SHOW WARNINGS LIMIT 3')
+          const said = warnings.map((warning) => String(warning[2])).join(' ')
+          throw new DriverError(`The server raised a warning: ${said || 'no details given.'}`, 'WARNING')
+        }
+        const reached = rowsReached(header)
+        if (reached !== 1) {
+          throw new DriverError(
+            reached === 0
+              ? 'It matched no row. The row may have been changed or deleted since it was loaded.'
+              : `It matched ${reached} rows instead of one.`,
+            'ROW_COUNT',
+          )
+        }
+      }
+      at = undefined
+      await runCommand(this.connection, 'COMMIT')
+      inTransaction = false
+      return { ok: true, durationMs: elapsed() }
+    } catch (error) {
+      if (inTransaction) await queryRows(this.connection, 'ROLLBACK').catch(() => {})
+      const failure = error as MysqlError
+      return {
+        ok: false,
+        message: failure.sqlMessage || failure.message || 'The save failed.',
+        code: failure.code,
+        statement: at,
+        durationMs: elapsed(),
+      }
+    } finally {
+      this.running = false
     }
   }
 
@@ -367,6 +518,140 @@ class MysqlSession implements DriverSession {
     this.selectLimit = limit
   }
 
+  /**
+   * Decides whether the rows of a result can be changed, and by which key.
+   *
+   * The server says where each column comes from, but it is not always the
+   * whole truth: for a subquery or a view it can name an alias as if it were
+   * the table. So this takes the cautious reading of everything it is told. A
+   * table has to be read under its own name, every column has to exist in it,
+   * and the key columns have to arrive still marked as part of a key, which
+   * they are not once the server has copied the rows into a temporary table.
+   */
+  private async describeEditing(
+    sql: string,
+    fields: FieldLike[],
+    columns: ResultColumn[],
+  ): Promise<Pick<RowsResult, 'editing' | 'readOnly'>> {
+    if (!isQuery(sql)) return { readOnly: 'Only the rows of a SELECT can be edited.' }
+
+    const stored = columns.flatMap((column, index) => (column.source ? [index] : []))
+    const table = columns[stored[0]]?.source
+    if (!table) return { readOnly: 'These values are not read straight from a table.' }
+
+    const alias = fields[stored[0]].table
+    const oneTable = stored.every((index) => {
+      const source = columns[index].source!
+      return source.database === table.database && source.table === table.table && fields[index].table === alias
+    })
+    if (!oneTable) return { readOnly: 'These rows combine more than one table.' }
+    if (alias !== table.table) {
+      return {
+        readOnly:
+          `The query reads \`${table.table}\` under another name (\`${alias}\`): an alias, a view or a subquery. ` +
+          'Rows can be edited when the table is read under its own name.',
+      }
+    }
+
+    let shape: TableShape
+    try {
+      shape = await this.tableShape(table)
+    } catch {
+      return { readOnly: `The keys of \`${table.table}\` could not be read.` }
+    }
+    if (!stored.every((index) => shape.columns.has(columns[index].source!.column.toLowerCase()))) {
+      return { readOnly: 'These values are not read straight from a table.' }
+    }
+
+    const find = (name: string) =>
+      stored.find((index) => columns[index].source!.column.toLowerCase() === name.toLowerCase())
+    // A nullable column, or an expression, cannot pick out one row.
+    const usable = shape.keys.filter((key) => key.parts.every((part) => part.column !== null && !part.nullable))
+    if (usable.length === 0) {
+      return {
+        readOnly: `\`${table.table}\` has no primary key or unique key, so one row cannot be told from another.`,
+      }
+    }
+
+    let copied = false
+    for (const key of usable) {
+      const found = key.parts.map((part) => find(part.column!))
+      if (found.some((index) => index === undefined)) continue
+      const keyColumns = found as number[]
+      // Comparing against a FLOAT or DOUBLE does not reliably find the row again.
+      if (keyColumns.some((index) => /^(FLOAT|DOUBLE)/.test(columns[index].dbType))) continue
+      if (!keyColumns.every((index) => flagsOf(fields[index]) & FLAG_PART_OF_KEY)) {
+        copied = true
+        continue
+      }
+      const editable = stored.filter(
+        (index) =>
+          columns[index].kind !== 'binary' && !shape.generated.has(columns[index].source!.column.toLowerCase()),
+      )
+      return {
+        editing: {
+          table: { database: table.database, table: table.table },
+          key: keyColumns,
+          editable,
+          nullable: editable.filter((index) => !(flagsOf(fields[index]) & FLAG_NOT_NULL)),
+        },
+      }
+    }
+
+    if (copied) {
+      return {
+        readOnly:
+          'The server gathered these rows in a temporary table before returning them, so it no longer says which ' +
+          'row each one is. Grouping, window functions and some subqueries and sorts do this.',
+      }
+    }
+    const wanted = usable[0].parts.map((part) => part.column!)
+    return {
+      readOnly:
+        `To edit these rows, add ${nameList(wanted)} to the query. ` +
+        `${wanted.length > 1 ? 'Together they identify' : 'It identifies'} a row of \`${table.table}\`.`,
+    }
+  }
+
+  /** One round trip for both lists. A row with no index name describes a column. */
+  private async tableShape(table: TableRef): Promise<TableShape> {
+    const rows = await queryRows(
+      this.connection,
+      `(SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NULLABLE
+          FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND NON_UNIQUE = 0)
+       UNION ALL
+       (SELECT NULL, ORDINAL_POSITION, COLUMN_NAME, IF(GENERATION_EXPRESSION <> '', 'GENERATED', '')
+          FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?)
+       LIMIT 100000`,
+      [table.database, table.table, table.database, table.table],
+    )
+
+    const shape: TableShape = { columns: new Set(), generated: new Set(), keys: [] }
+    const parts = new Map<string, { position: number; column: string | null; nullable: boolean }[]>()
+    for (const [index, position, column, note] of rows) {
+      if (index === null) {
+        const name = String(column).toLowerCase()
+        shape.columns.add(name)
+        if (note === 'GENERATED') shape.generated.add(name)
+      } else {
+        const list = parts.get(String(index)) ?? []
+        list.push({
+          position: Number(position),
+          column: column === null ? null : String(column),
+          nullable: String(note).toUpperCase() === 'YES',
+        })
+        parts.set(String(index), list)
+      }
+    }
+    shape.keys = [...parts]
+      .map(([name, list]) => ({ name, parts: list.sort((a, b) => a.position - b.position) }))
+      // The primary key first; after it, the same order every time.
+      .sort((a, b) => Number(b.name === 'PRIMARY') - Number(a.name === 'PRIMARY') || a.name.localeCompare(b.name))
+    return shape
+  }
+
   private async refreshDatabase(): Promise<void> {
     const rows = await queryRows(this.connection, 'SELECT DATABASE()')
     const name = rows[0]?.[0]
@@ -380,6 +665,7 @@ class MysqlSession implements DriverSession {
   private runStatement(sql: string): Promise<Outcome> {
     return new Promise((resolve, reject) => {
       let columns: ResultColumn[] | null = null
+      let captured: FieldLike[] = []
       let capturedSet = -1
       let setIndex = 0
       const rows: CellValue[][] = []
@@ -391,7 +677,7 @@ class MysqlSession implements DriverSession {
       const finish = () => {
         if (settled) return
         settled = true
-        if (columns) resolve({ kind: 'rows', columns, rows, truncated })
+        if (columns) resolve({ kind: 'rows', columns, fields: captured, rows, truncated })
         else resolve({ kind: 'ok', ...(ok ?? { affectedRows: 0 }) })
       }
 
@@ -400,6 +686,7 @@ class MysqlSession implements DriverSession {
       query.on('fields', (fields: FieldLike[] | undefined) => {
         if (fields && columns === null) {
           columns = fields.map(toColumn)
+          captured = fields
           capturedSet = setIndex
         }
       })

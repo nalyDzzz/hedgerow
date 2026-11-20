@@ -51,6 +51,9 @@ export function registerIpc({ store, host, window }: Context): void {
       setDatabase: (sessionId, database) => host.call('setDatabase', sessionId, database),
       execute: (sessionId, sql, options) => host.call('execute', sessionId, sql, options),
       cancel: (sessionId) => host.call('cancel', sessionId),
+      tableQuery: (sessionId, table) => host.call('tableQuery', sessionId, table),
+      planEdits: (sessionId, request) => host.call('planEdits', sessionId, request),
+      applyEdits: (sessionId, statements) => host.call('applyEdits', sessionId, statements),
     },
 
     window: {

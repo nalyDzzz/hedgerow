@@ -45,14 +45,40 @@ export type CellValue = string | number | null | BinaryCell
 
 export type ColumnKind = 'number' | 'text' | 'json' | 'datetime' | 'binary' | 'other'
 
+/** A table or view named in full, so it means the same whichever database a session has selected. */
+export interface TableRef {
+  database: string
+  table: string
+}
+
 export interface ResultColumn {
   name: string
   /** Type name for display, e.g. `VARCHAR`, `BIGINT`, `JSON`. */
   dbType: string
   kind: ColumnKind
-  /** Source table, when the server reports one. */
+  /** Source table, when the server reports one. This is the name the query used, which may be an alias. */
   table?: string
   primaryKey: boolean
+  /**
+   * The stored column this one shows, when the server says it is a plain column
+   * of a table. Absent for expressions, literals and aggregates.
+   */
+  source?: TableRef & { column: string }
+}
+
+/**
+ * How the rows of a result can be changed. A driver offers this only when it can
+ * find each row again: the rows all come from one table, and the result includes
+ * a primary key or unique key of that table. Indexes point into the result's columns.
+ */
+export interface ResultEditing {
+  table: TableRef
+  /** The columns that together identify one row. */
+  key: number[]
+  /** The columns whose values can be changed. */
+  editable: number[]
+  /** Of those, the ones that accept NULL. */
+  nullable: number[]
 }
 
 export interface RowsResult {
@@ -61,6 +87,10 @@ export interface RowsResult {
   rows: CellValue[][]
   /** True when more rows existed than were returned. */
   truncated: boolean
+  /** Present when changes to these rows can be written back. */
+  editing?: ResultEditing
+  /** When they cannot: why, in a sentence fit to show a person as-is. */
+  readOnly?: string
   durationMs: number
 }
 
@@ -92,6 +122,43 @@ export interface ExecuteOptions {
   rowLimit: number
 }
 
+/** A new value for one cell: text as it was typed, or NULL. An empty string is a value, not NULL. */
+export interface CellChange {
+  /** Index of the result column. */
+  column: number
+  value: string | null
+}
+
+/**
+ * One staged change to a row of an editable result. `key` holds the row's
+ * values for `ResultEditing.key`, in that order and exactly as the result
+ * returned them.
+ */
+export type RowChange =
+  | { kind: 'update'; key: CellValue[]; set: CellChange[] }
+  | { kind: 'delete'; key: CellValue[] }
+
+export interface EditRequest {
+  /** The columns of the result being edited. */
+  columns: ResultColumn[]
+  /** That result's `editing`. */
+  editing: ResultEditing
+  changes: RowChange[]
+}
+
+/** The outcome of saving changes. A save that is not `ok` changed nothing. */
+export type SaveResult =
+  | { ok: true; durationMs: number }
+  | {
+      ok: false
+      message: string
+      /** Driver-specific code, e.g. `ER_DUP_ENTRY`. */
+      code?: string
+      /** Index of the statement that stopped the save, when one did. */
+      statement?: number
+      durationMs: number
+    }
+
 export interface ColumnInfo {
   name: string
   /** Full declared type, e.g. `varchar(255)`. */
@@ -118,6 +185,20 @@ export interface DriverSession {
   execute(sql: string, options: ExecuteOptions): Promise<StatementResult>
   /** Interrupts the statement that is running, if any. The session stays usable. */
   cancel(): Promise<void>
+  /** The statement that reads the rows of a table, with names quoted the way this database quotes them. */
+  tableQuery(table: TableRef): Promise<string>
+  /**
+   * Turns staged changes into the statements that make them, one per changed
+   * row, with every name and value quoted for this session. Runs nothing.
+   * Rejects when a change cannot be written, such as text for a number column.
+   */
+  planEdits(request: EditRequest): Promise<string[]>
+  /**
+   * Runs statements from `planEdits` in one transaction. Commits only if every
+   * statement changes exactly one row and none raises a warning; otherwise
+   * everything is rolled back. Never rejects for SQL errors.
+   */
+  applyEdits(statements: string[]): Promise<SaveResult>
   close(): Promise<void>
 }
 
