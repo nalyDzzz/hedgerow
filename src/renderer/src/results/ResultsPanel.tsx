@@ -111,6 +111,7 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
     discardChanges,
     planSave,
     save,
+    cancel,
   } = useStore.getState()
   const [inspectorWidth, setInspectorWidth] = useState(380)
   /** The cell the grid asked the value panel to edit, as "row:column", and which request that was. */
@@ -349,6 +350,7 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
           connection={connectionName}
           changes={changes}
           onSave={(statements) => save(tab.id, statements)}
+          onStop={() => void cancel(tab.id)}
           onClose={() => setPlan(null)}
         />
       )}

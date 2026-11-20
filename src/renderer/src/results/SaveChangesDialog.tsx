@@ -17,6 +17,8 @@ interface SaveChangesDialogProps {
   changes: number
   /** Runs the statements. Resolves with a failure when nothing was saved. */
   onSave(statements: string[]): Promise<SaveResult>
+  /** Interrupts a save that is running, for one that waits on a lock held elsewhere. */
+  onStop(): void
   onClose(): void
 }
 
@@ -24,7 +26,15 @@ interface SaveChangesDialogProps {
  * The last step before anything reaches the database: the exact statements,
  * and the choice to run them or not.
  */
-export function SaveChangesDialog({ plan, table, connection, changes, onSave, onClose }: SaveChangesDialogProps) {
+export function SaveChangesDialog({
+  plan,
+  table,
+  connection,
+  changes,
+  onSave,
+  onStop,
+  onClose,
+}: SaveChangesDialogProps) {
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState<Extract<SaveResult, { ok: false }> | null>(null)
   const [copied, setCopied] = useState(false)
@@ -116,9 +126,15 @@ export function SaveChangesDialog({ plan, table, connection, changes, onSave, on
                 Copy SQL
               </Button>
               <div className="flex-1" />
-              <Button size="lg" disabled={saving} onClick={onClose}>
-                Cancel
-              </Button>
+              {saving ? (
+                <Button size="lg" variant="danger" title="Interrupt the save. Nothing will have been saved." onClick={onStop}>
+                  Stop
+                </Button>
+              ) : (
+                <Button size="lg" onClick={onClose}>
+                  Cancel
+                </Button>
+              )}
               <Button data-primary size="lg" variant="tint" disabled={saving} onClick={() => void save()}>
                 {saving && <LoaderCircle className="animate-spin" />}
                 {saving ? 'Saving…' : failure ? 'Try again' : `Save ${plural(changes, 'change')}`}
