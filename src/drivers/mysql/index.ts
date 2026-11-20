@@ -18,7 +18,7 @@ import type {
   TableRef,
 } from '@shared/driver'
 import { DriverError } from '../error'
-import { editStatements, isQuery, quoteIdentifier, tableQuery, type SqlMode } from './sql'
+import { editStatements, isEditStatement, isQuery, quoteIdentifier, tableQuery, type SqlMode } from './sql'
 
 /**
  * Upper bound on rows held for one statement, whatever LIMIT it asks for.
@@ -441,6 +441,11 @@ class MysqlSession implements DriverSession {
           'IN_TRANSACTION',
         )
       }
+
+      // Anything else could commit on its own, such as an ALTER TABLE, and break the promise of all or nothing.
+      at = statements.findIndex((sql) => !isEditStatement(sql))
+      if (at >= 0) throw new DriverError('It is not a change to one row of a table.', 'NOT_A_CHANGE')
+      at = undefined
 
       await runCommand(this.connection, 'START TRANSACTION')
       inTransaction = true

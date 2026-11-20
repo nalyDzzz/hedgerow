@@ -498,9 +498,15 @@ describe.skipIf(!port)('mysql driver', () => {
       expect(outcome).toMatchObject({ ok: true })
     })
 
-    it('refuses a statement that returns rows', async () => {
-      const outcome = await session.applyEdits([`SELECT * FROM ${TABLE}`])
-      expect(outcome).toMatchObject({ ok: false, statement: 0, code: 'NOT_A_CHANGE' })
+    it('runs nothing but changes to a row', async () => {
+      const outcome = await session.applyEdits([
+        `UPDATE ${TABLE} SET \`bio\` = 'after' WHERE \`id\` = 1`,
+        // Would commit on its own, and so could not be rolled back with the rest.
+        'ALTER TABLE heap ADD COLUMN c INT',
+      ])
+      expect(outcome).toMatchObject({ ok: false, statement: 1, code: 'NOT_A_CHANGE' })
+      expect(await bio(1)).toBe('before')
+      expect((await select('SELECT * FROM heap')).columns).toHaveLength(2)
     })
 
     it('leaves a transaction the session already has open alone', async () => {
