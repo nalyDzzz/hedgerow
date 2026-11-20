@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ConnectionDialog } from '@/components/ConnectionDialog'
+import { DiscardChangesDialog } from '@/components/DiscardChangesDialog'
 import { EmptyState } from '@/components/EmptyState'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { Sidebar } from '@/components/Sidebar'
@@ -72,6 +73,7 @@ export function App() {
       </div>
       <StatusBar />
       <ConnectionDialog />
+      <DiscardChangesDialog />
     </div>
   )
 }

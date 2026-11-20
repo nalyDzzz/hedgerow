@@ -23,10 +23,6 @@ export function splitStatements(text: string): string[] {
   return statements
 }
 
-export function quoteIdentifier(name: string): string {
-  return `\`${name.replaceAll('`', '``')}\``
-}
-
 /** Statements that change the shape of a database, after which the schema tree is stale. */
 export function changesSchema(sql: string): boolean {
   return /^\s*(create|alter|drop|rename|truncate)\b/i.test(sql)
