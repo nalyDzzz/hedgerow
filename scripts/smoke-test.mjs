@@ -19,12 +19,14 @@ function packagedApps() {
   }
   if (process.platform === 'darwin') {
     // One folder per architecture: mac-arm64, mac (Intel), mac-universal.
+    // The build for this machine's own processor goes first.
     return readdirSync(dist)
       .filter((folder) => folder === 'mac' || folder.startsWith('mac-'))
       .map((folder) => [
         folder === 'mac' ? 'mac-x64' : folder,
         join(dist, folder, 'Hedgerow.app', 'Contents', 'MacOS', 'Hedgerow'),
       ])
+      .sort(([a], [b]) => Number(b.endsWith(process.arch)) - Number(a.endsWith(process.arch)))
   }
   const folder = join(dist, 'linux-unpacked')
   return [['linux-x64', ['hedgerow', 'Hedgerow'].map((name) => join(folder, name)).find(existsSync)]]
@@ -39,7 +41,10 @@ async function check(label, executable) {
   // CI runners do not allow Chromium's sandbox to start.
   if (process.platform === 'linux' && process.env.CI) args.push('--no-sandbox')
 
-  const app = await electron.launch({ executablePath: executable, args, timeout: 60_000 })
+  console.log(`starting ${label}  ${executable}`)
+  const app = await electron.launch({ executablePath: executable, args, timeout: 60_000 }).catch((error) => {
+    throw new Error(`${label} did not start: ${error.message.split('\n')[0]}`)
+  })
   try {
     const page = await app.firstWindow()
     await page.getByRole('heading', { name: 'Connect to a database' }).waitFor({ timeout: 30_000 })
