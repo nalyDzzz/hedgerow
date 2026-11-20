@@ -1,5 +1,6 @@
 import { Plus, SquareTerminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { tintStyle } from '@/lib/hues'
 import { useActiveConnection, useStore } from '@/store'
 
 /** Shown in the main area while no query tab is open. */
@@ -22,7 +23,8 @@ export function EmptyState() {
               Open a query tab on <span className="font-medium text-foreground">{target.name}</span>, or double-click a
               table in the sidebar to see its rows.
             </p>
-            <div className="mt-5 flex gap-2">
+            {/* No connection is active yet, so borrow the color of the one the button opens. */}
+            <div className="mt-5 flex gap-2" data-tint style={tintStyle(target.hue)}>
               <Button size="lg" variant="tint" onClick={() => newTab(target.id)}>
                 <SquareTerminal />
                 New query
