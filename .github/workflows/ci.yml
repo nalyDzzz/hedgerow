@@ -1,8 +1,11 @@
 name: CI
 
+# Every push and pull request is checked and built. Pushing a tag like v0.1.0
+# additionally collects the installers into a draft GitHub release.
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -64,7 +67,7 @@ jobs:
             id: linux
             os: ubuntu-latest
     env:
-      # These builds are unsigned, so do not go looking for a signing certificate.
+      # There are no signing certificates yet, so do not go looking for one.
       CSC_IDENTITY_AUTO_DISCOVERY: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,6 +80,21 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm dist
+      # Start the packaged app and make sure it works before anyone downloads it.
+      - name: Launch the packaged app
+        if: runner.os != 'Linux'
+        run: pnpm smoke
+      - name: Launch the packaged app (Linux needs a virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm smoke
+      - name: Keep the launch screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots-${{ matrix.id }}
+          path: dist/smoke-*.png
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hedgerow-${{ matrix.id }}
@@ -86,3 +104,41 @@ jobs:
             dist/*.AppImage
           if-no-files-found: error
           retention-days: 7
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, installer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag matches the version in package.json
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$expected" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json, which says $expected."
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: hedgerow-*
+          path: release
+          merge-multiple: true
+      # The release starts as a draft so a person reads it before it goes public.
+      - name: Create the draft release
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "Hedgerow ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            *
