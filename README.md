@@ -35,7 +35,27 @@ Each connection has a color. This one is marked red, so there is no mistaking it
 
 ## Get it
 
-There is no packaged release yet. Until there is, build it from source as described below.
+Download the latest version from the [releases page](https://github.com/nalyDzzz/hedgerow/releases/latest).
+
+| System | File to download |
+| --- | --- |
+| Windows | `Hedgerow-…-win-x64.exe` |
+| macOS, Apple silicon | `Hedgerow-…-mac-arm64.dmg` |
+| macOS, Intel | `Hedgerow-…-mac-x64.dmg` |
+| Linux | `Hedgerow-…-linux-x86_64.AppImage` |
+
+The builds are not code-signed yet ([#7](https://github.com/nalyDzzz/hedgerow/issues/7)), so each system
+asks for one extra step the first time:
+
+- **Windows:** SmartScreen says it protected your PC. Choose **More info**, then **Run anyway**.
+- **macOS:** the first launch is blocked. Open **System Settings → Privacy & Security** and choose
+  **Open Anyway**. If that button does not appear, run
+  `xattr -dr com.apple.quarantine /Applications/Hedgerow.app` in Terminal.
+- **Linux:** make the file executable with `chmod +x`, then run it. On Ubuntu 23.10 and later an AppImage
+  may stop with a sandbox error; starting it with `--no-sandbox` works around that, at the cost of turning
+  Chromium's sandbox off.
+
+Each release lists SHA-256 checksums in `SHA256SUMS.txt`.
 
 ## Run it from source
 
@@ -70,22 +90,37 @@ This builds an installer for the operating system you run it on and puts it in `
 Windows, a `.dmg` on macOS, an AppImage on Linux. `pnpm package` builds the app unpacked instead, which is
 quicker when you only want to try the packaged build.
 
-The builds are not code-signed yet, so Windows shows a SmartScreen warning before running the installer, and
-macOS will refuse to open the app until it is signed and notarized.
+`pnpm smoke` then starts the packaged app and checks that it works. CI does this on all three systems for
+every change.
+
+### Making a release
+
+Set the version in `package.json`, merge that, then push a matching tag:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+CI builds and tests the installers and attaches them to a draft release. Read the draft, edit its notes, and
+publish it from the releases page.
 
 ## Roadmap
 
 Planned, roughly in this order:
 
-- Edit cells in the results grid and write the changes back
-- Query history
-- PostgreSQL and SQLite drivers
-- Export results to CSV and JSON
-- Connections through an SSH tunnel
-- Signed installers and automatic updates
+- Edit cells in the results grid and write the changes back ([#1](https://github.com/nalyDzzz/hedgerow/issues/1))
+- Query history ([#2](https://github.com/nalyDzzz/hedgerow/issues/2))
+- PostgreSQL ([#3](https://github.com/nalyDzzz/hedgerow/issues/3)) and SQLite
+  ([#4](https://github.com/nalyDzzz/hedgerow/issues/4)) drivers
+- Export results to CSV and JSON ([#5](https://github.com/nalyDzzz/hedgerow/issues/5))
+- Connections through an SSH tunnel ([#6](https://github.com/nalyDzzz/hedgerow/issues/6))
+- Signed installers ([#7](https://github.com/nalyDzzz/hedgerow/issues/7)) and automatic updates
+  ([#8](https://github.com/nalyDzzz/hedgerow/issues/8))
 - Optional AI help that uses your own Claude or Codex account
+  ([#9](https://github.com/nalyDzzz/hedgerow/issues/9))
 
-If you would like to take one of these on, open an issue first so the work is not done twice.
+If you would like to take one of these on, say so on its issue first so the work is not done twice.
 
 ## Contributing
 
