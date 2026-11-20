@@ -38,34 +38,73 @@ interface TreeRowProps {
   trailing?: ReactNode
   title?: string
   dimmed?: boolean
+  /** The connection the window is working in. */
+  current?: boolean
+  /** The row last clicked in the tree. */
   selected?: boolean
+  /** Opens or closes the row's children. The chevron always does this. */
+  onToggle?(): void
   onClick?(): void
+  /**
+   * The row's own action, such as opening a table. A row that has one is opened and
+   * closed with its chevron only: if a click on the row did it too, both clicks of a
+   * double-click would, and the children would flash open and shut.
+   */
   onDoubleClick?(): void
 }
 
-function TreeRow({ depth, expanded, icon, label, trailing, title, dimmed, selected, onClick, onDoubleClick }: TreeRowProps) {
+function TreeRow({
+  depth,
+  expanded,
+  icon,
+  label,
+  trailing,
+  title,
+  dimmed,
+  current,
+  selected,
+  onToggle,
+  onClick,
+  onDoubleClick,
+}: TreeRowProps) {
   return (
     <div
       role="treeitem"
       aria-expanded={expanded}
-      aria-selected={selected}
+      aria-selected={selected || current}
       title={title}
-      onClick={onClick}
+      onClick={() => {
+        onClick?.()
+        if (!onDoubleClick) onToggle?.()
+      }}
       onDoubleClick={onDoubleClick}
       style={{ paddingLeft: 6 + depth * 14 }}
       className={cn(
         'group/row flex h-[26px] items-center gap-1.5 pr-1.5 text-[12.5px] hover:bg-muted',
-        selected && 'bg-muted',
+        current && 'bg-muted',
+        selected && 'bg-tint-soft hover:bg-tint-soft',
         dimmed && 'text-muted-foreground',
       )}
     >
-      <ChevronRight
-        className={cn(
-          'size-3 shrink-0 text-faint transition-transform',
-          expanded && 'rotate-90',
-          expanded === undefined && 'invisible',
-        )}
-      />
+      {expanded === undefined ? (
+        <span className="size-3 shrink-0" />
+      ) : (
+        // Wider than the arrow it shows, so it is easy to hit; the margins keep the row's spacing.
+        // Hidden from assistive technology because the row itself says whether it is expanded.
+        <span
+          aria-hidden="true"
+          data-chevron
+          className="-mx-1 flex h-full w-5 shrink-0 items-center justify-center text-faint hover:text-foreground"
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggle?.()
+          }}
+          // Two quick clicks on the arrow open and close the row. They are not the row's double-click.
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <ChevronRight className={cn('size-3 transition-transform', expanded && 'rotate-90')} />
+        </span>
+      )}
       {icon}
       <span className="min-w-[40%] flex-1 truncate">{label}</span>
       {trailing}
@@ -90,7 +129,8 @@ function Note({ depth, children, tone }: { depth: number; children: ReactNode; t
 function TableNode({ connectionId, database, table }: { connectionId: string; database: string; table: TableInfo }) {
   const key = `t:${connectionId}:${database}:${table.name}`
   const expanded = useStore((state) => Boolean(state.expanded[key]))
-  const { toggleNode, newTab } = useStore.getState()
+  const selected = useStore((state) => state.selectedNode === key)
+  const { toggleNode, selectNode, newTab } = useStore.getState()
   const Icon = table.type === 'view' ? Eye : Table2
 
   return (
@@ -101,7 +141,9 @@ function TableNode({ connectionId, database, table }: { connectionId: string; da
         icon={<Icon className="size-3.5 shrink-0 text-muted-foreground" />}
         label={table.name}
         title={`${table.name} (${table.type}). Double-click to open its rows.`}
-        onClick={() => toggleNode(key)}
+        selected={selected}
+        onToggle={() => toggleNode(key)}
+        onClick={() => selectNode(key)}
         onDoubleClick={() =>
           newTab(connectionId, {
             database,
@@ -135,7 +177,8 @@ function TableNode({ connectionId, database, table }: { connectionId: string; da
 function DatabaseNode({ connectionId, database, live }: { connectionId: string; database: string; live: LiveConnection }) {
   const key = `d:${connectionId}:${database}`
   const expanded = useStore((state) => Boolean(state.expanded[key]))
-  const { toggleNode, loadSchema, newTab } = useStore.getState()
+  const selected = useStore((state) => state.selectedNode === key)
+  const { toggleNode, selectNode, loadSchema, newTab } = useStore.getState()
   const schema = live.schemas[database]
 
   return (
@@ -149,10 +192,13 @@ function DatabaseNode({ connectionId, database, live }: { connectionId: string; 
         trailing={
           schema?.status === 'loading' ? <LoaderCircle className="size-3 animate-spin text-faint" /> : undefined
         }
-        onClick={() => {
+        title={`${database}. Double-click for a new query on it.`}
+        selected={selected}
+        onToggle={() => {
           toggleNode(key)
           if (!expanded) void loadSchema(connectionId, database)
         }}
+        onClick={() => selectNode(key)}
         onDoubleClick={() => newTab(connectionId, { database })}
       />
       {expanded && schema?.status === 'failed' && (
@@ -176,7 +222,9 @@ function ConnectionNode({ connection, onDelete }: { connection: SavedConnection;
   const live = useStore((state) => state.live[connection.id]) as LiveConnection | undefined
   const expanded = useStore((state) => Boolean(state.expanded[key]))
   const focused = useStore((state) => state.focusedConnectionId === connection.id)
-  const { connect, disconnect, toggleNode, focusConnection, newTab, setDialog, loadSchema } = useStore.getState()
+  const { connect, disconnect, toggleNode, selectNode, focusConnection, newTab, setDialog, loadSchema } =
+    useStore.getState()
+  const disconnected = !live || live.status === 'failed'
 
   const databases = [...(live?.databases ?? [])].sort(
     (a, b) => Number(SYSTEM_DATABASES.has(a)) - Number(SYSTEM_DATABASES.has(b)) || a.localeCompare(b),
@@ -197,7 +245,7 @@ function ConnectionNode({ connection, onDelete }: { connection: SavedConnection;
             <TreeRow
               depth={0}
               expanded={expanded && live?.status === 'connected'}
-              selected={focused}
+              current={focused}
               icon={
                 live?.status === 'connecting' ? (
                   <LoaderCircle className="size-3 shrink-0 animate-spin text-tint" />
@@ -224,14 +272,21 @@ function ConnectionNode({ connection, onDelete }: { connection: SavedConnection;
                     event.stopPropagation()
                     newTab(connection.id)
                   }}
+                  // Otherwise two quick clicks here would open a third tab as the row's double-click.
+                  onDoubleClick={(event) => event.stopPropagation()}
                 >
                   <Plus />
                 </Button>
               }
+              onToggle={() => {
+                if (disconnected) void connect(connection.id)
+                else toggleNode(key)
+              }}
               onClick={() => {
                 focusConnection(connection.id)
-                if (!live || live.status === 'failed') void connect(connection.id)
-                else toggleNode(key)
+                selectNode(key)
+                // Connecting shows the databases once, however many clicks follow.
+                if (disconnected) void connect(connection.id)
               }}
               onDoubleClick={() => newTab(connection.id)}
             />
