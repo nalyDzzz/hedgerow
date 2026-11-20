@@ -374,7 +374,10 @@ class MysqlSession implements DriverSession {
       }
       const { fields, ...rows } = outcome
       // Looked up after the clock stops: it is our question, not part of the statement.
-      const editing = await this.describeEditing(sql, fields, rows.columns)
+      // The statement itself succeeded, so nothing that goes wrong here may turn it into a failure.
+      const editing = await this.describeEditing(sql, fields, rows.columns).catch(() => ({
+        readOnly: 'It could not be worked out whether these rows can be edited.',
+      }))
       return { ...rows, ...editing, durationMs, database: this.currentDatabase }
     } catch (error) {
       this.running = false
