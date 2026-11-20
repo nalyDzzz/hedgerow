@@ -254,7 +254,7 @@ function runCommand(connection: Connection, sql: string): Promise<OkHeader> {
     connection.query(sql, (error, result) => {
       if (error) reject(error)
       else if (Array.isArray(result)) {
-        reject(new DriverError('It returns rows instead of changing one.', 'NOT_A_CHANGE'))
+        reject(new DriverError('The statement returns rows instead of changing one.', 'NOT_A_CHANGE'))
       } else resolve(result as OkHeader)
     })
   })
@@ -444,7 +444,7 @@ class MysqlSession implements DriverSession {
 
       // Anything else could commit on its own, such as an ALTER TABLE, and break the promise of all or nothing.
       at = statements.findIndex((sql) => !isEditStatement(sql))
-      if (at >= 0) throw new DriverError('It is not a change to one row of a table.', 'NOT_A_CHANGE')
+      if (at >= 0) throw new DriverError('The statement is not a change to one row of a table.', 'NOT_A_CHANGE')
       at = undefined
 
       await runCommand(this.connection, 'START TRANSACTION')
@@ -465,8 +465,8 @@ class MysqlSession implements DriverSession {
         if (reached !== 1) {
           throw new DriverError(
             reached === 0
-              ? 'It matched no row. The row may have been changed or deleted since it was loaded.'
-              : `It matched ${reached} rows instead of one.`,
+              ? 'The statement matched no row. The row may have been changed or deleted since it was loaded.'
+              : `The statement matched ${reached} rows instead of one.`,
             'ROW_COUNT',
           )
         }
