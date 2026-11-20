@@ -25,7 +25,6 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/menu'
 import { tintStyle } from '@/lib/hues'
-import { quoteIdentifier } from '@/lib/sql'
 import { cn } from '@/lib/utils'
 import { SYSTEM_DATABASES, useStore, type LiveConnection } from '@/store'
 
@@ -106,7 +105,7 @@ function TableNode({ connectionId, database, table }: { connectionId: string; da
           newTab(connectionId, {
             database,
             title: table.name,
-            sql: `SELECT * FROM ${quoteIdentifier(database)}.${quoteIdentifier(table.name)}`,
+            table: { database, table: table.name },
             run: true,
           })
         }

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { ConnectionInput, SavedConnection } from '@shared/api'
-import type { StatementResult, TableInfo } from '@shared/driver'
+import type { CellValue, RowChange, SaveResult, StatementResult, TableInfo, TableRef } from '@shared/driver'
 import { changesSchema } from './lib/sql'
 
 const api = window.api
@@ -22,9 +22,25 @@ export interface LiveConnection {
   schemas: Record<string, SchemaState>
 }
 
+/**
+ * Changes made in the grid that have not been saved. Rows and columns are
+ * numbered as in the result they belong to.
+ */
+export interface StagedChanges {
+  /** New values of edited cells, by row and then by column. NULL and '' are different values. */
+  cells: Record<number, Record<number, string | null>>
+  /** Rows marked to be deleted. */
+  deleted: Record<number, true>
+}
+
 export interface ResultEntry {
+  /** Stays the same when a save reloads the rows, so the grid keeps its place. */
+  id: number
   sql: string
   result: StatementResult
+  staged?: StagedChanges
+  /** How many changes the last save wrote. Shown until something else happens to this result. */
+  saved?: number
 }
 
 export interface CellRef {
@@ -37,6 +53,11 @@ export interface Tab {
   connectionId: string
   title: string
   database: string | null
+  /**
+   * The table this tab was opened to show. Null for a tab that began as a
+   * query, and from the moment its SQL is edited, because it may then show anything.
+   */
+  table: TableRef | null
   sessionId: string | null
   sql: string
   running: boolean
@@ -57,6 +78,16 @@ interface NewTabOptions {
   sql?: string
   title?: string
   run?: boolean
+  /** Opens the tab on this table's rows. */
+  table?: TableRef
+}
+
+/** Asked before unsaved changes in a tab would be thrown away. */
+export interface DiscardPrompt {
+  tabId: string
+  changes: number
+  /** What the person was doing: running a statement replaces the results, closing removes them. */
+  reason: 'run' | 'close'
 }
 
 interface State {
@@ -70,6 +101,7 @@ interface State {
   expanded: Record<string, boolean>
   dialog: DialogState
   inspectorOpen: boolean
+  discardPrompt: DiscardPrompt | null
 
   loadConnections(): Promise<void>
   saveConnection(input: ConnectionInput): Promise<SavedConnection>
@@ -80,7 +112,7 @@ interface State {
   toggleNode(key: string, open?: boolean): void
   focusConnection(id: string): void
 
-  newTab(connectionId: string, options?: NewTabOptions): string
+  newTab(connectionId: string, options?: NewTabOptions): void
   closeTab(id: string): void
   setActiveTab(id: string): void
   setTabSql(id: string, sql: string): void
@@ -91,6 +123,19 @@ interface State {
   selectCell(id: string, cell: CellRef | null): void
   setActiveResult(id: string, index: number): void
 
+  /** Stages a new value for a cell of the active result. Nothing is sent to the database. */
+  stageCell(id: string, cell: CellRef, value: string | null): void
+  revertCell(id: string, cell: CellRef): void
+  /** Marks a row of the active result to be deleted, or takes the mark off. */
+  setRowDeleted(id: string, row: number, deleted: boolean): void
+  discardChanges(id: string): void
+  /** Asks the driver for the statements that would save the active result's changes. Runs nothing. */
+  planSave(id: string): Promise<string[]>
+  /** Runs those statements in one transaction, then reloads the rows to show what was stored. */
+  save(id: string, statements: string[]): Promise<SaveResult>
+  /** Answers the question in `discardPrompt`. */
+  answerDiscard(discard: boolean): void
+
   setDialog(dialog: DialogState): void
   setInspectorOpen(open: boolean): void
 }
@@ -100,9 +145,48 @@ export const SYSTEM_DATABASES = new Set(['information_schema', 'mysql', 'perform
 export const ROW_LIMITS = [500, 1000, 5000, 25_000, 100_000]
 
 let queryCounter = 0
+let resultCounter = 0
+/** What to carry on with if the person agrees to discard their changes. */
+let afterDiscard: (() => void) | null = null
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** How many changes are staged: every edited cell, and every row marked to be deleted. */
+export function countChanges(staged: StagedChanges | undefined): number {
+  if (!staged) return 0
+  let count = Object.keys(staged.deleted).length
+  for (const [row, cells] of Object.entries(staged.cells)) {
+    // A row that will be deleted counts once, whatever was typed into it first.
+    if (!staged.deleted[Number(row)]) count += Object.keys(cells).length
+  }
+  return count
+}
+
+function unsavedChanges(tab: Tab): number {
+  return tab.results.reduce((sum, entry) => sum + countChanges(entry.staged), 0)
+}
+
+/** True when a typed value is what the cell already holds. */
+function sameAsStored(stored: CellValue, value: string | null): boolean {
+  if (stored === null || value === null) return stored === value
+  return typeof stored !== 'object' && String(stored) === value
+}
+
+/** The staged changes as the driver wants them: one per changed row, top to bottom. */
+function rowChanges(rows: CellValue[][], key: number[], staged: StagedChanges): RowChange[] {
+  const changed = new Set([...Object.keys(staged.cells), ...Object.keys(staged.deleted)].map(Number))
+  return [...changed]
+    .sort((a, b) => a - b)
+    .map((row): RowChange => {
+      const rowKey = key.map((column) => rows[row][column])
+      if (staged.deleted[row]) return { kind: 'delete', key: rowKey }
+      const set = Object.entries(staged.cells[row])
+        .map(([column, value]) => ({ column: Number(column), value }))
+        .sort((a, b) => a.column - b.column)
+      return { kind: 'update', key: rowKey, set }
+    })
 }
 
 export const useStore = create<State>()((set, get) => {
@@ -122,6 +206,89 @@ export const useStore = create<State>()((set, get) => {
 
   const tabById = (id: string) => get().tabs.find((tab) => tab.id === id)
 
+  /** Changes the staged changes of a tab's active result, if that result can be edited. */
+  const restage = (id: string, change: (staged: StagedChanges, entry: ResultEntry) => StagedChanges | undefined) =>
+    patchTab(id, (tab) => {
+      const entry = tab.results[tab.activeResult] as ResultEntry | undefined
+      if (entry?.result.kind !== 'rows' || !entry.result.editing) return {}
+      const staged = change(entry.staged ?? { cells: {}, deleted: {} }, entry)
+      const next: ResultEntry = { ...entry, staged: countChanges(staged) > 0 ? staged : undefined, saved: undefined }
+      return { results: tab.results.map((item) => (item === entry ? next : item)) }
+    })
+
+  /**
+   * Holds back something that would throw away unsaved changes until the person
+   * has agreed. Returns true when it did, and `proceed` then runs on their yes.
+   */
+  const askBeforeDiscarding = (tab: Tab, reason: DiscardPrompt['reason'], proceed: () => void): boolean => {
+    const changes = unsavedChanges(tab)
+    if (changes === 0) return false
+    afterDiscard = proceed
+    set({ discardPrompt: { tabId: tab.id, changes, reason } })
+    return true
+  }
+
+  const dropChanges = (id: string) =>
+    patchTab(id, (tab) => ({ results: tab.results.map((entry) => ({ ...entry, staged: undefined })) }))
+
+  /** The tab's own session, opened on first use. Null when the tab was closed while it opened. */
+  const sessionFor = async (id: string): Promise<string | null> => {
+    const tab = tabById(id)
+    if (!tab) return null
+    if (tab.sessionId) return tab.sessionId
+    const info = await api.sessions.open(tab.connectionId, tab.database ?? undefined)
+    if (!tabById(id)) {
+      void api.sessions.close(info.sessionId)
+      return null
+    }
+    patchTab(id, { sessionId: info.sessionId, database: info.database })
+    return info.sessionId
+  }
+
+  const createTab = (connectionId: string, options: NewTabOptions): Tab => {
+    const connection = get().connections.find((c) => c.id === connectionId)
+    const database = options.database ?? (connection?.database || null)
+    const tab: Tab = {
+      id: crypto.randomUUID(),
+      connectionId,
+      title: options.title ?? `Query ${++queryCounter}`,
+      database,
+      table: options.table ?? null,
+      sessionId: null,
+      sql: options.sql ?? '',
+      running: false,
+      cancelRequested: false,
+      results: [],
+      activeResult: 0,
+      selected: null,
+      rowLimit: 1000,
+    }
+    set((state) => ({ tabs: [...state.tabs, tab], activeTabId: tab.id, focusedConnectionId: connectionId }))
+
+    void get()
+      .connect(connectionId)
+      .then(() => {
+        if (database) void get().loadSchema(connectionId, database)
+      })
+    if (options.run && tab.sql) void get().run(tab.id, [tab.sql])
+    return tab
+  }
+
+  /** Opens a tab on a table's rows. The driver writes the statement: it knows how its database quotes a name. */
+  const openTable = async (connectionId: string, table: TableRef) => {
+    await get().connect(connectionId)
+    // If connecting failed, the sidebar already says why.
+    const sessionId = get().live[connectionId]?.sessionId
+    if (!sessionId) return
+    try {
+      const sql = await api.sessions.tableQuery(sessionId, table)
+      createTab(connectionId, { database: table.database, title: table.table, table, sql, run: true })
+    } catch (error) {
+      // The session behind the tree is gone, so the connection is too.
+      patchLive(connectionId, { status: 'failed', error: message(error) })
+    }
+  }
+
   return {
     connections: [],
     loaded: false,
@@ -132,6 +299,7 @@ export const useStore = create<State>()((set, get) => {
     expanded: {},
     dialog: { mode: 'closed' },
     inspectorOpen: false,
+    discardPrompt: null,
 
     async loadConnections() {
       const connections = await api.connections.list()
@@ -157,7 +325,11 @@ export const useStore = create<State>()((set, get) => {
 
     async removeConnection(id) {
       await get().disconnect(id)
-      for (const tab of get().tabs.filter((tab) => tab.connectionId === id)) get().closeTab(tab.id)
+      for (const tab of get().tabs.filter((tab) => tab.connectionId === id)) {
+        // Deleting the connection was confirmed, and its dialog says the tabs go with it.
+        dropChanges(tab.id)
+        get().closeTab(tab.id)
+      }
       await api.connections.remove(id)
       await get().loadConnections()
       if (get().focusedConnectionId === id) set({ focusedConnectionId: null })
@@ -233,36 +405,14 @@ export const useStore = create<State>()((set, get) => {
     },
 
     newTab(connectionId, options = {}) {
-      const connection = get().connections.find((c) => c.id === connectionId)
-      const database = options.database ?? (connection?.database || null)
-      const tab: Tab = {
-        id: crypto.randomUUID(),
-        connectionId,
-        title: options.title ?? `Query ${++queryCounter}`,
-        database,
-        sessionId: null,
-        sql: options.sql ?? '',
-        running: false,
-        cancelRequested: false,
-        results: [],
-        activeResult: 0,
-        selected: null,
-        rowLimit: 1000,
-      }
-      set((state) => ({ tabs: [...state.tabs, tab], activeTabId: tab.id, focusedConnectionId: connectionId }))
-
-      void get()
-        .connect(connectionId)
-        .then(() => {
-          if (database) void get().loadSchema(connectionId, database)
-        })
-      if (options.run && tab.sql) void get().run(tab.id, [tab.sql])
-      return tab.id
+      if (options.table && options.sql === undefined) void openTable(connectionId, options.table)
+      else createTab(connectionId, options)
     },
 
     closeTab(id) {
       const tab = tabById(id)
       if (!tab) return
+      if (askBeforeDiscarding(tab, 'close', () => get().closeTab(id))) return
       if (tab.sessionId) {
         const { sessionId } = tab
         const closing = tab.running ? api.sessions.cancel(sessionId).catch(() => {}) : Promise.resolve()
@@ -283,7 +433,7 @@ export const useStore = create<State>()((set, get) => {
     },
 
     setTabSql(id, sql) {
-      patchTab(id, { sql })
+      patchTab(id, { sql, table: null })
     },
 
     async setTabDatabase(id, database) {
@@ -301,20 +451,14 @@ export const useStore = create<State>()((set, get) => {
     async run(id, statements) {
       const tab = tabById(id)
       if (!tab || tab.running || statements.length === 0) return
+      // Running replaces the results, and unsaved changes to them would go too.
+      if (askBeforeDiscarding(tab, 'run', () => void get().run(id, statements))) return
       patchTab(id, { running: true, cancelRequested: false, results: [], activeResult: 0, selected: null })
 
       let current = statements[0]
       try {
-        let sessionId = tab.sessionId
-        if (!sessionId) {
-          const info = await api.sessions.open(tab.connectionId, tab.database ?? undefined)
-          if (!tabById(id)) {
-            void api.sessions.close(info.sessionId)
-            return
-          }
-          sessionId = info.sessionId
-          patchTab(id, { sessionId, database: info.database })
-        }
+        const sessionId = await sessionFor(id)
+        if (!sessionId) return
 
         for (const sql of statements) {
           // Stop may have been pressed while the session was still opening.
@@ -322,7 +466,7 @@ export const useStore = create<State>()((set, get) => {
           current = sql
           const result = await api.sessions.execute(sessionId, sql, { rowLimit: tab.rowLimit })
           patchTab(id, (latest) => ({
-            results: [...latest.results, { sql, result }],
+            results: [...latest.results, { id: ++resultCounter, sql, result }],
             activeResult: latest.results.length,
             database: result.database,
           }))
@@ -335,6 +479,7 @@ export const useStore = create<State>()((set, get) => {
           results: [
             ...latest.results,
             {
+              id: ++resultCounter,
               sql: current,
               result: { kind: 'error', message: message(error), durationMs: 0, database: latest.database },
             },
@@ -364,6 +509,112 @@ export const useStore = create<State>()((set, get) => {
 
     setActiveResult(id, index) {
       patchTab(id, { activeResult: index, selected: null })
+    },
+
+    stageCell(id, { row, col }, value) {
+      restage(id, (staged, entry) => {
+        if (entry.result.kind !== 'rows') return staged
+        const { editing, rows } = entry.result
+        const stored = rows[row]?.[col]
+        if (stored === undefined || !editing?.editable.includes(col)) return staged
+        if (value === null && !editing.nullable.includes(col)) return staged
+
+        const cells = { ...staged.cells, [row]: { ...staged.cells[row] } }
+        // Typing a cell back to what it holds takes the change away.
+        if (sameAsStored(stored, value)) delete cells[row][col]
+        else cells[row][col] = value
+        if (Object.keys(cells[row]).length === 0) delete cells[row]
+        return { ...staged, cells }
+      })
+    },
+
+    revertCell(id, { row, col }) {
+      restage(id, (staged) => {
+        if (staged.cells[row]?.[col] === undefined) return staged
+        const cells = { ...staged.cells, [row]: { ...staged.cells[row] } }
+        delete cells[row][col]
+        if (Object.keys(cells[row]).length === 0) delete cells[row]
+        return { ...staged, cells }
+      })
+    },
+
+    setRowDeleted(id, row, deleted) {
+      restage(id, (staged, entry) => {
+        if (entry.result.kind !== 'rows' || row < 0 || row >= entry.result.rows.length) return staged
+        const marked = { ...staged.deleted }
+        if (deleted) marked[row] = true
+        else delete marked[row]
+        return { ...staged, deleted: marked }
+      })
+    },
+
+    discardChanges(id) {
+      restage(id, () => undefined)
+    },
+
+    async planSave(id) {
+      const tab = tabById(id)
+      const entry = tab?.results[tab.activeResult]
+      if (!tab || entry?.result.kind !== 'rows' || !entry.result.editing || !entry.staged) {
+        throw new Error('There are no changes to save.')
+      }
+      const { columns, editing, rows } = entry.result
+      const changes = rowChanges(rows, editing.key, entry.staged)
+      const sessionId = await sessionFor(id)
+      if (!sessionId) throw new Error('This tab was closed.')
+      return api.sessions.planEdits(sessionId, { columns, editing, changes })
+    },
+
+    async save(id, statements) {
+      const tab = tabById(id)
+      const entry = tab?.results[tab.activeResult]
+      if (!tab || !entry || tab.running) {
+        return { ok: false, message: 'Wait for the running statement to finish, then save again.', durationMs: 0 }
+      }
+      const replaceEntry = (patch: Partial<ResultEntry>) =>
+        patchTab(id, (latest) => ({
+          results: latest.results.map((item) => (item.id === entry.id ? { ...item, ...patch } : item)),
+        }))
+
+      patchTab(id, { running: true, cancelRequested: false })
+      try {
+        const sessionId = await sessionFor(id)
+        if (!sessionId) return { ok: false, message: 'This tab was closed.', durationMs: 0 }
+        const outcome = await api.sessions.applyEdits(sessionId, statements)
+        if (!outcome.ok) return outcome
+
+        // The changes are in the database now, whatever happens to the reload below.
+        replaceEntry({ staged: undefined, saved: countChanges(entry.staged) })
+        // Read the rows again instead of trusting what was typed: the stored value is what
+        // the server made of it, and a trigger or a default may have changed more.
+        const result = await api.sessions.execute(sessionId, entry.sql, { rowLimit: tab.rowLimit })
+        replaceEntry({ result })
+        patchTab(id, { database: result.database })
+        return outcome
+      } catch (error) {
+        // The call itself failed, so the session is gone; the next run opens a new one.
+        patchTab(id, { sessionId: null })
+        if (tabById(id)?.results.find((item) => item.id === entry.id)?.staged) {
+          return { ok: false, message: message(error), durationMs: 0 }
+        }
+        // Saved, but the rows could not be read back. Say so where the rows were.
+        replaceEntry({
+          result: { kind: 'error', message: message(error), durationMs: 0, database: tab.database },
+        })
+        return { ok: true, durationMs: 0 }
+      } finally {
+        patchTab(id, { running: false, cancelRequested: false })
+      }
+    },
+
+    answerDiscard(discard) {
+      const prompt = get().discardPrompt
+      const proceed = afterDiscard
+      afterDiscard = null
+      set({ discardPrompt: null })
+      if (!prompt || !discard) return
+      dropChanges(prompt.tabId)
+      proceed?.()
     },
 
     setDialog(dialog) {
