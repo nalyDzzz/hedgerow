@@ -69,6 +69,11 @@ jobs:
     env:
       # There are no signing certificates yet, so do not go looking for one.
       CSC_IDENTITY_AUTO_DISCOVERY: false
+      # electron-builder skips signing on pull requests to keep certificates away
+      # from them. The macOS ad-hoc signature uses no certificate, and without it
+      # the app cannot be launched, so sign there too. Revisit this when real
+      # certificates are added.
+      CSC_FOR_PULL_REQUEST: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,6 +85,19 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm dist
+      - name: Check the macOS signatures
+        if: runner.os == 'macOS'
+        run: |
+          for app in dist/mac*/Hedgerow.app; do
+            echo "== $app"
+            codesign --display --verbose=2 "$app" 2>&1 | grep -E "^(Identifier|Signature|CodeDirectory)" || true
+            codesign --verify --deep --strict "$app"
+            echo "signature is valid"
+          done
+      # The runner is Apple silicon; Rosetta lets it start the Intel build as well.
+      - name: Install Rosetta
+        if: runner.os == 'macOS'
+        run: softwareupdate --install-rosetta --agree-to-license
       # Start the packaged app and make sure it works before anyone downloads it.
       - name: Launch the packaged app
         if: runner.os != 'Linux'
