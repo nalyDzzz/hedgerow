@@ -2,10 +2,12 @@
 
 # The product name comes from "productName" in package.json.
 #
-# appId identifies the app to the operating system. It is free to change until the
-# first public release; after that, changing it makes Windows and macOS treat the
-# app as a different one. Match it to a domain or account you control if you have one.
-appId: dev.hedgerow.app
+# appId identifies the app to the operating system. Changing it after a release
+# makes Windows and macOS treat the app as a different one, so leave it alone.
+appId: io.github.nalydzzz.hedgerow
+
+# One naming scheme for every installer, e.g. Hedgerow-0.1.0-mac-arm64.dmg.
+artifactName: '${productName}-${version}-${os}-${arch}.${ext}'
 
 directories:
   output: dist
@@ -33,9 +35,17 @@ nsis:
 mac:
   icon: build/icon-mac.png
   category: public.app-category.developer-tools
+  # There is no Apple certificate yet, so the app gets an ad-hoc signature. Without
+  # any signature, macOS reports a downloaded app as damaged and will not open it.
+  # Replace this with a real identity, and turn hardenedRuntime back on, when the
+  # app is properly signed and notarized.
+  identity: '-'
+  hardenedRuntime: false
   target:
-    - dmg
-    - zip
+    - target: dmg
+      arch:
+        - arm64
+        - x64
 
 linux:
   icon: build/icon.png
