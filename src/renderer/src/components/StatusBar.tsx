@@ -1,6 +1,7 @@
 import { DRIVER_INFO } from '@shared/driver'
 import { MOD } from '@/lib/utils'
 import { useActiveConnection, useStore } from '@/store'
+import { useUpdates } from '@/updates'
 
 function Key({ children }: { children: string }) {
   return (
@@ -13,6 +14,7 @@ function Key({ children }: { children: string }) {
 export function StatusBar() {
   const connection = useActiveConnection()
   const live = useStore((state) => (connection ? state.live[connection.id] : undefined))
+  const version = useUpdates((state) => state.version)
 
   const status = !connection
     ? 'No connection selected'
@@ -40,6 +42,15 @@ export function StatusBar() {
         <Key>T</Key>
         <span>New query</span>
       </span>
+      {version && (
+        <button
+          className="shrink-0 border-l border-border pl-3 text-faint hover:text-foreground"
+          title="This version, and whether there is a newer one"
+          onClick={() => useUpdates.getState().setDialogOpen(true)}
+        >
+          v{version}
+        </button>
+      )}
     </footer>
   )
 }
