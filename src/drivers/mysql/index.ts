@@ -754,13 +754,14 @@ class MysqlSession implements DriverSession {
 
     const shape: TableShape = { columns: new Set(), generated: new Set(), auto: new Set(), required: [], keys: [] }
     const parts = new Map<string, { position: number; column: string | null; nullable: boolean }[]>()
+    const required: { name: string; position: number }[] = []
     for (const [index, position, column, note] of rows) {
       if (index === null) {
         const name = String(column).toLowerCase()
         shape.columns.add(name)
         if (note === 'GENERATED') shape.generated.add(name)
         else if (note === 'AUTO') shape.auto.add(name)
-        else if (note === 'REQUIRED') shape.required.push(String(column))
+        else if (note === 'REQUIRED') required.push({ name: String(column), position: Number(position) })
       } else {
         const list = parts.get(String(index)) ?? []
         list.push({
@@ -771,6 +772,8 @@ class MysqlSession implements DriverSession {
         parts.set(String(index), list)
       }
     }
+    // In the order the table has them, which is the order a person knows them in.
+    shape.required = required.sort((a, b) => a.position - b.position).map(({ name }) => name)
     shape.keys = [...parts]
       .map(([name, list]) => ({ name, parts: list.sort((a, b) => a.position - b.position) }))
       // The primary key first; after it, the same order every time.

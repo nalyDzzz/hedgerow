@@ -1,5 +1,6 @@
 import {
   memo,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -17,7 +18,7 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Ban, Copy, Eraser, KeyRound, Lock, PanelRight, Pencil, Trash2, Undo2 } from 'lucide-react'
+import { Ban, Copy, CopyPlus, Eraser, KeyRound, Lock, PanelRight, Pencil, Plus, Trash2, Undo2 } from 'lucide-react'
 import type { CellValue, ResultColumn, RowsResult } from '@shared/driver'
 import {
   ContextMenu,
@@ -28,7 +29,7 @@ import {
 } from '@/components/ui/menu'
 import { cellText, formatBytes, isBinary } from '@/lib/format'
 import { MOD, cn, shortcut } from '@/lib/utils'
-import type { CellRef, StagedChanges } from '@/store'
+import type { CellRef, NewRow, StagedChanges } from '@/store'
 
 type Row = CellValue[]
 
@@ -54,6 +55,23 @@ function estimateWidth(column: ResultColumn, rows: Row[], index: number): number
   return Math.round(Math.min(Math.max(chars * CHAR_WIDTH + 24, 64), 360))
 }
 
+const NO_NEW_ROWS: NewRow[] = []
+
+/**
+ * What a cell of a new row says while it has not been given a value: who will
+ * decide it. Null for a column that stores nothing, such as an expression.
+ */
+function unsetLabels(result: RowsResult): (string | null)[] {
+  const { editing } = result
+  return result.columns.map((column, index) => {
+    if (!editing?.adding || !column.source) return null
+    if (editing.adding.auto.includes(index)) return 'auto'
+    if (editing.adding.required.includes(index)) return 'required'
+    // Of the columns that cannot be typed into, a binary one takes its default and the rest are computed.
+    return editing.editable.includes(index) || column.kind === 'binary' ? 'default' : 'auto'
+  })
+}
+
 function renderValue(value: CellValue, column: ResultColumn): ReactNode {
   if (value === null) return <span className="cell-null">NULL</span>
   if (isBinary(value)) {
@@ -72,22 +90,25 @@ function renderValue(value: CellValue, column: ResultColumn): ReactNode {
 }
 
 /** A value that a one-line box would damage or cannot show whole. */
-function needsRoom(value: CellValue): boolean {
+function needsRoom(value: CellValue | undefined): boolean {
   return typeof value === 'string' && (value.length > MAX_CELL_CHARS || /[\r\n]/.test(value))
 }
 
 interface GridRowProps {
   index: number
   top: number
-  row: Row
+  /** What the database holds for this row. Absent for a row that is not in it yet. */
+  row: Row | undefined
   columns: ResultColumn[]
   cellStyles: CSSProperties[]
   /** Selected column in this row, or -1. */
   selectedCol: number
-  /** Values staged for this row, by column, when it has any. */
+  /** Values staged for this row, by column, when it has any. For a new row, the values it was given. */
   edits: Record<number, string | null> | undefined
   /** The row is marked to be deleted. */
   deleted: boolean
+  /** For a new row: what each cell says until it is given a value. */
+  unset?: (string | null)[]
 }
 
 const GridRow = memo(function GridRow({
@@ -99,6 +120,7 @@ const GridRow = memo(function GridRow({
   selectedCol,
   edits,
   deleted,
+  unset,
 }: GridRowProps) {
   return (
     <div
@@ -106,25 +128,36 @@ const GridRow = memo(function GridRow({
       className="grid-row"
       data-row={index}
       data-selected={selectedCol >= 0}
-      data-changed={edits !== undefined || undefined}
+      data-changed={(row !== undefined && edits !== undefined) || undefined}
       data-deleted={deleted || undefined}
+      data-new={row === undefined || undefined}
       style={{ top, width: 'var(--grid-width)' }}
     >
-      <div className="grid-gutter">{index + 1}</div>
-      {row.map((stored, col) => {
+      <div className="grid-gutter" title={row === undefined ? 'A new row, not saved yet' : undefined}>
+        {row === undefined ? '+' : index + 1}
+      </div>
+      {columns.map((column, col) => {
         const changed = edits !== undefined && col in edits
-        const value = changed ? edits[col] : stored
+        const value = changed ? edits[col] : row?.[col]
         return (
           <div
             key={col}
             role="gridcell"
             data-col={col}
             data-selected={col === selectedCol}
-            data-changed={changed || undefined}
-            className={cn('grid-cell', columns[col].kind === 'number' && value !== null && 'cell-number')}
+            data-changed={(changed && row !== undefined) || undefined}
+            className={cn('grid-cell', column.kind === 'number' && value != null && 'cell-number')}
             style={cellStyles[col]}
           >
-            {renderValue(value, columns[col])}
+            {value === undefined ? (
+              unset?.[col] && (
+                <span className="cell-unset" data-required={unset[col] === 'required' || undefined}>
+                  {unset[col]}
+                </span>
+              )
+            ) : (
+              renderValue(value, column)
+            )}
           </div>
         )
       })}
@@ -146,8 +179,8 @@ interface CellEditorProps {
   initial: string
   /** The first key press already replaced the old value. */
   typed: boolean
-  /** The cell holds NULL, which the box shows until something is typed. */
-  holdsNull: boolean
+  /** What the cell holds in place of text, such as NULL. The box shows it until something is typed. */
+  holds: string | undefined
   nullable: boolean
   alignRight: boolean
   onDone(outcome: EditOutcome): void
@@ -155,10 +188,11 @@ interface CellEditorProps {
 
 /**
  * A text box in place of one cell. An untouched box changes nothing, so opening
- * a NULL cell and leaving it does not turn the NULL into an empty string.
+ * a NULL cell and leaving it does not turn the NULL into an empty string, and a
+ * cell of a new row that was only looked at stays not set.
  * Emptying the box means an empty string; NULL has its own button.
  */
-function CellEditor({ style, initial, typed, holdsNull, nullable, alignRight, onDone }: CellEditorProps) {
+function CellEditor({ style, initial, typed, holds, nullable, alignRight, onDone }: CellEditorProps) {
   const input = useRef<HTMLInputElement>(null)
   const [text, setText] = useState(initial)
   const [touched, setTouched] = useState(typed)
@@ -187,7 +221,7 @@ function CellEditor({ style, initial, typed, holdsNull, nullable, alignRight, on
         spellCheck={false}
         aria-label="New value"
         // Shown while the box is empty: what an empty box will store.
-        placeholder={holdsNull && !touched ? 'NULL' : 'empty text'}
+        placeholder={holds !== undefined && !touched ? holds : 'empty text'}
         className={cn('selectable', alignRight && 'text-right')}
         onChange={(event) => {
           setText(event.target.value)
@@ -237,6 +271,11 @@ interface ResultsGridProps {
   staged: StagedChanges | undefined
   /** False while the result must not be changed, such as during a save. */
   editable: boolean
+  /**
+   * Asked after the selection moved. True, once, when something outside the grid
+   * moved it and wants the keyboard to follow, as the Add row button does.
+   */
+  claimFocus(): boolean
   onSelect(cell: CellRef): void
   /** Asks to show the selected value in full. */
   onOpen(): void
@@ -245,6 +284,8 @@ interface ResultsGridProps {
   onStage(cell: CellRef, value: string | null): void
   onRevert(cell: CellRef): void
   onDeleteRow(row: number, deleted: boolean): void
+  onAddRow(): void
+  onDuplicateRow(row: number): void
 }
 
 export function ResultsGrid({
@@ -252,19 +293,28 @@ export function ResultsGrid({
   selected,
   staged,
   editable,
+  claimFocus,
   onSelect,
   onOpen,
   onEditInPanel,
   onStage,
   onRevert,
   onDeleteRow,
+  onAddRow,
+  onDuplicateRow,
 }: ResultsGridProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const [editor, setEditor] = useState<(CellRef & { initial: string; typed: boolean }) | null>(null)
   /** The cell that Edit in the menu was chosen for, until the menu has closed. */
   const editAfterMenu = useRef<CellRef | null>(null)
+  /** Set when the grid itself is about to move the selection somewhere that may be out of view. */
+  const revealNext = useRef(false)
   const { rows } = result
   const editing = editable ? result.editing : undefined
+  // New rows come after the rows of the result, and are numbered on from them.
+  const added = staged?.added ?? NO_NEW_ROWS
+  const total = rows.length + added.length
+  const unset = useMemo(() => unsetLabels(result), [result])
 
   const columns = useMemo<ColumnDef<typeof features, Row>[]>(
     () =>
@@ -284,7 +334,7 @@ export function ResultsGrid({
   const gridWidth = GUTTER_WIDTH + widths.reduce((sum, width) => sum + width, 0)
 
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: total,
     getScrollElement: () => scroller.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
@@ -302,15 +352,22 @@ export function ResultsGrid({
     [result.columns],
   )
 
-  /** The value a cell shows: the staged one if it has one, otherwise what is stored. */
-  const shown = (cell: CellRef): CellValue => {
+  const isNew = (row: number) => row >= rows.length
+  /**
+   * The value a cell shows: the staged one if it has one, otherwise what is stored.
+   * Undefined for a cell of a new row that has not been given a value.
+   */
+  const shown = (cell: CellRef): CellValue | undefined => {
+    if (isNew(cell.row)) return added[cell.row - rows.length]?.cells[cell.col]
     const change = staged?.cells[cell.row]?.[cell.col]
     return change !== undefined && !staged?.deleted[cell.row] ? change : rows[cell.row][cell.col]
   }
-  const isChanged = (cell: CellRef) => staged?.cells[cell.row]?.[cell.col] !== undefined
+  /** The cell holds a value that is not saved. In a new row that is any value at all. */
+  const isChanged = (cell: CellRef) =>
+    isNew(cell.row) ? shown(cell) !== undefined : staged?.cells[cell.row]?.[cell.col] !== undefined
   const isDeleted = (row: number) => Boolean(staged?.deleted[row])
-  /** A row can only be changed if the values that identify it are all there. */
-  const hasKey = (row: number) => Boolean(editing?.key.every((col) => rows[row][col] !== null))
+  /** A row can only be changed if the values that identify it are all there. A new row needs none yet. */
+  const hasKey = (row: number) => isNew(row) || Boolean(editing?.key.every((col) => rows[row][col] !== null))
   const canChange = (cell: CellRef) =>
     Boolean(editing?.editable.includes(cell.col)) && hasKey(cell.row) && !isDeleted(cell.row)
   const acceptsNull = (col: number) => Boolean(editing?.nullable.includes(col))
@@ -328,7 +385,7 @@ export function ResultsGrid({
 
   const select = (cell: CellRef) => {
     const next = {
-      row: Math.min(Math.max(cell.row, 0), rows.length - 1),
+      row: Math.min(Math.max(cell.row, 0), total - 1),
       col: Math.min(Math.max(cell.col, 0), result.columns.length - 1),
     }
     onSelect(next)
@@ -348,9 +405,21 @@ export function ResultsGrid({
       return true
     }
     reveal(cell)
-    setEditor({ ...cell, initial: typed ?? (value === null ? '' : String(value)), typed: typed !== undefined })
+    setEditor({ ...cell, initial: typed ?? (value == null ? '' : String(value)), typed: typed !== undefined })
     return true
   }
+
+  // A new row is added below the last one, which is usually out of view.
+  useEffect(() => {
+    if (!selected) return
+    const wanted = claimFocus()
+    if (!wanted && !revealNext.current) return
+    revealNext.current = false
+    reveal(selected)
+    if (wanted) scroller.current?.focus({ preventScroll: true })
+    // Runs when the selection moves or a row is added, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.row, selected?.col, total])
 
   const finishEdit = ({ value, move, refocus }: EditOutcome) => {
     if (!editor) return
@@ -380,14 +449,14 @@ export function ResultsGrid({
   }
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (!selected || rows.length === 0) return
+    if (!selected || total === 0) return
     const mod = event.ctrlKey || event.metaKey
     const page = Math.max(1, Math.floor((scroller.current?.clientHeight ?? 0) / ROW_HEIGHT) - 2)
     let { row, col } = selected
 
     if (mod && event.key.toLowerCase() === 'c') {
       event.preventDefault()
-      void navigator.clipboard.writeText(cellText(shown(selected)))
+      void navigator.clipboard.writeText(cellText(shown(selected) ?? ''))
       return
     }
 
@@ -416,7 +485,7 @@ export function ResultsGrid({
         break
       case 'End':
         col = result.columns.length - 1
-        if (mod) row = rows.length - 1
+        if (mod) row = total - 1
         break
       case 'Enter':
       case 'F2':
@@ -430,6 +499,13 @@ export function ResultsGrid({
           if (!editing || !hasKey(selected.row)) return
           event.preventDefault()
           onDeleteRow(selected.row, !isDeleted(selected.row))
+          return
+        }
+        if (isNew(selected.row)) {
+          // Clearing a cell of a new row takes its value away again, which leaves it to the table.
+          if (!isChanged(selected)) return
+          event.preventDefault()
+          onRevert(selected)
           return
         }
         // Clearing a cell means NULL, where the column allows it.
@@ -456,7 +532,8 @@ export function ResultsGrid({
     height: ROW_HEIGHT,
   })
 
-  const menuCell = selected && selected.row < rows.length ? selected : null
+  const menuCell = selected && selected.row < total ? selected : null
+  const menuNew = menuCell !== null && isNew(menuCell.row)
   const menuColumn = menuCell ? result.columns[menuCell.col] : undefined
 
   return (
@@ -464,7 +541,7 @@ export function ResultsGrid({
       ref={scroller}
       role="grid"
       tabIndex={0}
-      aria-rowcount={rows.length}
+      aria-rowcount={total}
       aria-colcount={result.columns.length}
       aria-readonly={!editing}
       className="h-full overflow-auto bg-background outline-none"
@@ -535,6 +612,25 @@ export function ResultsGrid({
             </div>
 
             {virtualizer.getVirtualItems().map((item) => {
+              if (isNew(item.index)) {
+                const row = added[item.index - rows.length]
+                // The count can run a render ahead of the rows when one was just removed.
+                if (!row) return null
+                return (
+                  <GridRow
+                    key={`new:${row.id}`}
+                    index={item.index}
+                    top={item.start}
+                    row={undefined}
+                    columns={result.columns}
+                    cellStyles={cellStyles}
+                    selectedCol={selected?.row === item.index ? selected.col : -1}
+                    edits={row.cells}
+                    deleted={false}
+                    unset={unset}
+                  />
+                )
+              }
               const deleted = isDeleted(item.index)
               return (
                 <GridRow
@@ -558,7 +654,9 @@ export function ResultsGrid({
                 style={editorStyle(editor)}
                 initial={editor.initial}
                 typed={editor.typed}
-                holdsNull={shown(editor) === null}
+                holds={
+                  shown(editor) === null ? 'NULL' : shown(editor) === undefined ? (unset[editor.col] ?? '') : undefined
+                }
                 nullable={acceptsNull(editor.col)}
                 alignRight={result.columns[editor.col].kind === 'number'}
                 onDone={finishEdit}
@@ -591,7 +689,7 @@ export function ResultsGrid({
                 >
                   <Ban />
                   Set to NULL
-                  <Shortcut>Del</Shortcut>
+                  {!menuNew && <Shortcut>Del</Shortcut>}
                 </ContextMenuItem>
                 {menuColumn.kind === 'text' && (
                   <ContextMenuItem
@@ -607,9 +705,30 @@ export function ResultsGrid({
                   onSelect={() => onRevert(menuCell)}
                 >
                   <Undo2 />
-                  Undo this change
+                  {menuNew ? 'Do not set' : 'Undo this change'}
+                  {menuNew && <Shortcut>Del</Shortcut>}
                 </ContextMenuItem>
                 <ContextMenuSeparator />
+                <ContextMenuItem
+                  disabled={!editing.adding}
+                  onSelect={() => {
+                    revealNext.current = true
+                    onAddRow()
+                  }}
+                >
+                  <Plus />
+                  Add row
+                </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={!editing.adding}
+                  onSelect={() => {
+                    revealNext.current = true
+                    onDuplicateRow(menuCell.row)
+                  }}
+                >
+                  <CopyPlus />
+                  Duplicate row
+                </ContextMenuItem>
                 {isDeleted(menuCell.row) ? (
                   <ContextMenuItem onSelect={() => onDeleteRow(menuCell.row, false)}>
                     <Undo2 />
@@ -623,14 +742,14 @@ export function ResultsGrid({
                     onSelect={() => onDeleteRow(menuCell.row, true)}
                   >
                     <Trash2 />
-                    Delete row
+                    {menuNew ? 'Remove new row' : 'Delete row'}
                     <Shortcut>{shortcut(MOD, 'Del')}</Shortcut>
                   </ContextMenuItem>
                 )}
                 <ContextMenuSeparator />
               </>
             )}
-            <ContextMenuItem onSelect={() => void navigator.clipboard.writeText(cellText(shown(menuCell)))}>
+            <ContextMenuItem onSelect={() => void navigator.clipboard.writeText(cellText(shown(menuCell) ?? ''))}>
               <Copy />
               Copy
               <Shortcut>{shortcut(MOD, 'C')}</Shortcut>
