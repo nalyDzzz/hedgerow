@@ -2,6 +2,9 @@
 import { describe, expect, it } from 'vitest'
 import type { EditRequest, ResultColumn } from '@shared/driver'
 import {
+  andCondition,
+  changedView,
+  columnTest,
   editStatements,
   isEditStatement,
   isInsert,
@@ -16,7 +19,14 @@ const usual = { backslashEscapes: true }
 const literalBackslash = { backslashEscapes: false }
 
 function column(name: string, kind: ResultColumn['kind'], dbType: string, stored = name): ResultColumn {
-  return { name, kind, dbType, primaryKey: false, source: { database: 'shop', table: 'items', column: stored } }
+  return {
+    name,
+    kind,
+    dbType,
+    primaryKey: false,
+    nullable: true,
+    source: { database: 'shop', table: 'items', column: stored },
+  }
 }
 
 const id = column('id', 'number', 'BIGINT UNSIGNED')
@@ -238,6 +248,123 @@ describe('statements for staged changes', () => {
     expect(() => editStatements(request(change(2, '1'), { editable: [1] }), usual)).toThrow(/`price` cannot be changed/)
     expect(() => editStatements(request(change(2, null)), usual)).toThrow(/`price` does not accept NULL/)
     expect(() => editStatements(request(change(2, 'cheap')), usual)).toThrow(/is not a number/)
+  })
+})
+
+describe('the statement that opens a table', () => {
+  const items = { database: 'shop', table: 'items' }
+
+  it('reads the table under its own name, with nothing added when there is no view', () => {
+    expect(tableQuery(items)).toBe('SELECT * FROM `shop`.`items`')
+    expect(tableQuery(items, { where: '  ', orderBy: '' })).toBe('SELECT * FROM `shop`.`items`')
+  })
+
+  it('puts each part of a view on a line of its own', () => {
+    expect(tableQuery(items, { where: "title LIKE 'a%'", orderBy: 'price DESC, id' })).toBe(
+      "SELECT * FROM `shop`.`items`\nWHERE title LIKE 'a%'\nORDER BY price DESC, id",
+    )
+    expect(tableQuery(items, { where: '', orderBy: 'id' })).toBe('SELECT * FROM `shop`.`items`\nORDER BY id')
+  })
+
+  it('keeps a comment typed after a condition from swallowing the order', () => {
+    const statement = tableQuery(items, { where: 'price > 5 -- the dear ones', orderBy: 'id' })
+    expect(statement.split('\n')).toEqual(['SELECT * FROM `shop`.`items`', 'WHERE price > 5 -- the dear ones', 'ORDER BY id'])
+  })
+
+  it('drops a semicolon typed out of habit', () => {
+    expect(tableQuery(items, { where: 'price > 5; ', orderBy: 'id;' })).toBe(
+      'SELECT * FROM `shop`.`items`\nWHERE price > 5\nORDER BY id',
+    )
+  })
+})
+
+describe('a condition written from a cell', () => {
+  const required: ResultColumn = { ...title, nullable: false }
+
+  it('compares numbers bare and text quoted', () => {
+    expect(columnTest(id, '9007199254740993', false, usual)).toBe('`id` = 9007199254740993')
+    expect(columnTest(price, '9.50', false, usual)).toBe('`price` = 9.50')
+    expect(columnTest(title, "it's", false, usual)).toBe("`title` = 'it''s'")
+    expect(columnTest(title, 'C:\\temp', false, literalBackslash)).toBe("`title` = 'C:\\temp'")
+  })
+
+  it('uses the name the column has in the table', () => {
+    expect(columnTest(column('label', 'text', 'VARCHAR', 'title'), 'x', false, usual)).toBe("`title` = 'x'")
+  })
+
+  it('asks for NULL with IS, never with =', () => {
+    expect(columnTest(title, null, false, usual)).toBe('`title` IS NULL')
+    expect(columnTest(title, null, true, usual)).toBe('`title` IS NOT NULL')
+  })
+
+  it('keeps the rows that hold NULL when a value is excluded', () => {
+    expect(columnTest(title, 'x', true, usual)).toBe("(`title` <> 'x' OR `title` IS NULL)")
+    expect(columnTest(required, 'x', true, usual)).toBe("`title` <> 'x'")
+  })
+
+  it('reads the value as JSON for a JSON column', () => {
+    const tags = column('tags', 'json', 'JSON')
+    expect(columnTest(tags, '["a", "b"]', false, usual)).toBe('`tags` = CAST(\'["a", "b"]\' AS JSON)')
+  })
+
+  it('refuses what a row cannot be found by', () => {
+    expect(() => columnTest(column('weight', 'number', 'FLOAT'), 1.1, false, usual)).toThrow(/approximate numbers/)
+    expect(() => columnTest(column('weight', 'number', 'DOUBLE'), '1.1', true, usual)).toThrow(/approximate numbers/)
+    expect(() => columnTest({ ...title, source: undefined }, 'x', false, usual)).toThrow(/not stored in the table/)
+    expect(() => columnTest(price, 'cheap', false, usual)).toThrow(/is not a number/)
+    expect(() =>
+      columnTest(column('token', 'binary', 'BINARY'), { type: 'binary', bytes: 64, preview: 'ab' }, false, usual),
+    ).toThrow(/longer than was loaded/)
+  })
+})
+
+describe('adding a condition to a filter', () => {
+  it('stands alone when there is nothing yet', () => {
+    expect(andCondition('', '`a` = 1')).toBe('`a` = 1')
+    expect(andCondition('  ; ', '`a` = 1')).toBe('`a` = 1')
+  })
+
+  it('goes after what is there', () => {
+    expect(andCondition("title LIKE 'a%'", '`a` = 1')).toBe("title LIKE 'a%' AND `a` = 1")
+    expect(andCondition('a BETWEEN 1 AND 2', '`b` = 3')).toBe('a BETWEEN 1 AND 2 AND `b` = 3')
+  })
+
+  it('brackets what is there when it holds an OR, which would otherwise change meaning', () => {
+    expect(andCondition('a = 1 OR b = 2', '`c` = 3')).toBe('(a = 1 OR b = 2) AND `c` = 3')
+    expect(andCondition('a = 1 or b = 2', '`c` = 3')).toBe('(a = 1 or b = 2) AND `c` = 3')
+    expect(andCondition('a = 1 || b = 2', '`c` = 3')).toBe('(a = 1 || b = 2) AND `c` = 3')
+    expect(andCondition('a XOR b', '`c` = 3')).toBe('(a XOR b) AND `c` = 3')
+    // Not an OR, only a name that contains one.
+    expect(andCondition('floor = 1', '`c` = 3')).toBe('floor = 1 AND `c` = 3')
+  })
+
+  it('goes before a comment, which would swallow it', () => {
+    expect(andCondition('a = 1 -- for now', '`c` = 3')).toBe('`c` = 3 AND a = 1 -- for now')
+    expect(andCondition('a = 1 /* hm */', '`c` = 3')).toBe('`c` = 3 AND a = 1 /* hm */')
+  })
+
+  it('does not say the same thing twice', () => {
+    expect(andCondition('`a` = 1 AND `b` = 2', '`b` = 2')).toBe('`a` = 1 AND `b` = 2')
+    expect(andCondition('`a` = 1', '`a` = 1')).toBe('`a` = 1')
+  })
+})
+
+describe('a view changed from the grid', () => {
+  const view = { where: "title LIKE 'a%' ", orderBy: 'price DESC' }
+
+  it('narrows the rows and leaves the order alone', () => {
+    expect(changedView(view, { kind: 'filter', column: price, value: '9.50', exclude: false }, usual)).toEqual({
+      where: "title LIKE 'a%' AND `price` = 9.50",
+      orderBy: 'price DESC',
+    })
+  })
+
+  it('orders by one column, replacing the order there was, and leaves the filter alone', () => {
+    const sorted = (direction: 'asc' | 'desc' | null) =>
+      changedView(view, { kind: 'sort', column: column('label', 'text', 'VARCHAR', 'ti`tle'), direction }, usual)
+    expect(sorted('asc')).toEqual({ where: "title LIKE 'a%'", orderBy: '`ti``tle`' })
+    expect(sorted('desc')).toEqual({ where: "title LIKE 'a%'", orderBy: '`ti``tle` DESC' })
+    expect(sorted(null)).toEqual({ where: "title LIKE 'a%'", orderBy: '' })
   })
 })
 

@@ -17,9 +17,20 @@ import type {
   StatementResult,
   TableInfo,
   TableRef,
+  TableView,
+  ViewChange,
 } from '@shared/driver'
 import { DriverError } from '../error'
-import { editStatements, isEditStatement, isInsert, isQuery, quoteIdentifier, tableQuery, type SqlMode } from './sql'
+import {
+  changedView,
+  editStatements,
+  isEditStatement,
+  isInsert,
+  isQuery,
+  quoteIdentifier,
+  tableQuery,
+  type SqlMode,
+} from './sql'
 
 /**
  * Upper bound on rows held for one statement, whatever LIMIT it asks for.
@@ -150,6 +161,7 @@ function toColumn(field: FieldLike): ResultColumn {
     kind,
     table: field.table || undefined,
     primaryKey: (flags & FLAG_PRIMARY_KEY) !== 0,
+    nullable: (flags & FLAG_NOT_NULL) === 0,
   }
   if (field.schema && field.orgTable && field.orgName) {
     column.source = { database: field.schema, table: field.orgTable, column: field.orgName }
@@ -441,20 +453,16 @@ class MysqlSession implements DriverSession {
     }
   }
 
-  async tableQuery(table: TableRef): Promise<string> {
-    return tableQuery(table)
+  async tableQuery(table: TableRef, view?: TableView): Promise<string> {
+    return tableQuery(table, view)
+  }
+
+  async changeView(view: TableView, change: ViewChange): Promise<TableView> {
+    return changedView(view, change, await this.sqlMode())
   }
 
   async planEdits(request: EditRequest): Promise<string[]> {
-    this.assertOpen()
-    let mode: SqlMode
-    try {
-      const rows = await queryRows(this.connection, 'SELECT @@SESSION.sql_mode')
-      mode = { backslashEscapes: !String(rows[0]?.[0] ?? '').toUpperCase().includes('NO_BACKSLASH_ESCAPES') }
-    } catch (error) {
-      throw describeError(error as MysqlError, this.params)
-    }
-    return editStatements(request, mode)
+    return editStatements(request, await this.sqlMode())
   }
 
   async applyEdits(statements: string[]): Promise<SaveResult> {
@@ -543,6 +551,17 @@ class MysqlSession implements DriverSession {
         resolve()
       })
     })
+  }
+
+  /** How this session reads a string, asked each time because a statement may have changed it. */
+  private async sqlMode(): Promise<SqlMode> {
+    this.assertOpen()
+    try {
+      const rows = await queryRows(this.connection, 'SELECT @@SESSION.sql_mode')
+      return { backslashEscapes: !String(rows[0]?.[0] ?? '').toUpperCase().includes('NO_BACKSLASH_ESCAPES') }
+    } catch (error) {
+      throw describeError(error as MysqlError, this.params)
+    }
   }
 
   private assertOpen(): void {

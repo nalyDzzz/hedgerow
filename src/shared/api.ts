@@ -10,7 +10,9 @@ import type {
   StatementResult,
   TableInfo,
   TableRef,
+  TableView,
   TlsMode,
+  ViewChange,
 } from './driver'
 
 /** Hue (0-360) that tints the workspace while this connection is active. */
@@ -91,8 +93,10 @@ export interface AppApi {
     setDatabase(sessionId: string, database: string): Promise<void>
     execute(sessionId: string, sql: string, options: ExecuteOptions): Promise<StatementResult>
     cancel(sessionId: string): Promise<void>
-    /** The statement that shows a table's rows, written by the driver. */
-    tableQuery(sessionId: string, table: TableRef): Promise<string>
+    /** The statement that shows a table's rows, or the rows a view keeps, written by the driver. */
+    tableQuery(sessionId: string, table: TableRef, view?: TableView): Promise<string>
+    /** A view after one change asked for in the grid, with the name and value written by the driver. Nothing is run. */
+    changeView(sessionId: string, view: TableView, change: ViewChange): Promise<TableView>
     /** The statements that would make these changes. Nothing is run. */
     planEdits(sessionId: string, request: EditRequest): Promise<string[]>
     /** Runs planned statements in one transaction that commits only if each changes exactly one row. */
@@ -135,6 +139,7 @@ export const API_CHANNELS = [
   'sessions:execute',
   'sessions:cancel',
   'sessions:tableQuery',
+  'sessions:changeView',
   'sessions:planEdits',
   'sessions:applyEdits',
   'updates:current',

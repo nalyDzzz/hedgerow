@@ -59,6 +59,8 @@ export interface ResultColumn {
   /** Source table, when the server reports one. This is the name the query used, which may be an alias. */
   table?: string
   primaryKey: boolean
+  /** False when the server says this column never holds NULL. */
+  nullable: boolean
   /**
    * The stored column this one shows, when the server says it is a plain column
    * of a table. Absent for expressions, literals and aggregates.
@@ -141,6 +143,28 @@ export interface ExecuteOptions {
   rowLimit: number
 }
 
+/**
+ * How a table's rows are narrowed and ordered when it is opened. Both parts are
+ * text in the database's own SQL, as a person would type them: the app passes
+ * them on to the driver and never takes them apart.
+ */
+export interface TableView {
+  /** A condition, as it would follow WHERE. Empty for every row. */
+  where: string
+  /** Sort terms, as they would follow ORDER BY. Empty for the order the database gives. */
+  orderBy: string
+}
+
+/**
+ * One change to a view that is asked for in the grid instead of typed. The
+ * driver writes it, because names and values have to be quoted its way.
+ */
+export type ViewChange =
+  /** Keeps only the rows that hold `value` in `column`, or with `exclude` only the ones that do not. */
+  | { kind: 'filter'; column: ResultColumn; value: CellValue; exclude: boolean }
+  /** Orders by `column` alone. No direction takes the order away. */
+  | { kind: 'sort'; column: ResultColumn; direction: 'asc' | 'desc' | null }
+
 /** A new value for one cell: text as it was typed, or NULL. An empty string is a value, not NULL. */
 export interface CellChange {
   /** Index of the result column. */
@@ -214,8 +238,18 @@ export interface DriverSession {
   execute(sql: string, options: ExecuteOptions): Promise<StatementResult>
   /** Interrupts the statement that is running, if any. The session stays usable. */
   cancel(): Promise<void>
-  /** The statement that reads the rows of a table, with names quoted the way this database quotes them. */
-  tableQuery(table: TableRef): Promise<string>
+  /**
+   * The statement that reads the rows of a table, with names quoted the way
+   * this database quotes them. With a view, only the rows it keeps, in its order.
+   * The table is read under its own name, so the rows stay editable.
+   */
+  tableQuery(table: TableRef, view?: TableView): Promise<string>
+  /**
+   * Makes one change to a view and gives back the view that results, with the
+   * name and the value written for this session. Runs nothing. Rejects when
+   * rows cannot be found by the value, such as an approximate number.
+   */
+  changeView(view: TableView, change: ViewChange): Promise<TableView>
   /**
    * Turns staged changes into the statements that make them, one per change
    * and in the same order, with every name and value quoted for this session. Runs nothing.
