@@ -1,6 +1,14 @@
 import { create } from 'zustand'
 import type { ConnectionInput, SavedConnection } from '@shared/api'
-import type { CellValue, RowChange, SaveResult, StatementResult, TableInfo, TableRef } from '@shared/driver'
+import type {
+  CellValue,
+  RowChange,
+  RowsResult,
+  SaveResult,
+  StatementResult,
+  TableInfo,
+  TableRef,
+} from '@shared/driver'
 import { changesSchema } from './lib/sql'
 
 const api = window.api
@@ -22,6 +30,17 @@ export interface LiveConnection {
   schemas: Record<string, SchemaState>
 }
 
+/** A row added in the grid that is not in the database yet. */
+export interface NewRow {
+  /** Tells new rows apart while they wait to be saved. */
+  id: number
+  /**
+   * The values given so far, by column. A column that is absent is not set,
+   * which is not the same as NULL: the table decides what it holds.
+   */
+  cells: Record<number, string | null>
+}
+
 /**
  * Changes made in the grid that have not been saved. Rows and columns are
  * numbered as in the result they belong to.
@@ -31,6 +50,11 @@ export interface StagedChanges {
   cells: Record<number, Record<number, string | null>>
   /** Rows marked to be deleted. */
   deleted: Record<number, true>
+  /**
+   * Rows to add, oldest first. They have no number in the result, so the grid
+   * shows them after its rows and counts on from the last one.
+   */
+  added: NewRow[]
 }
 
 export interface ResultEntry {
@@ -41,6 +65,8 @@ export interface ResultEntry {
   staged?: StagedChanges
   /** How many changes the last save wrote. Shown until something else happens to this result. */
   saved?: number
+  /** How many rows that save added which the rows read back afterwards do not include. */
+  outside?: number
 }
 
 export interface CellRef {
@@ -129,8 +155,12 @@ interface State {
   /** Stages a new value for a cell of the active result. Nothing is sent to the database. */
   stageCell(id: string, cell: CellRef, value: string | null): void
   revertCell(id: string, cell: CellRef): void
-  /** Marks a row of the active result to be deleted, or takes the mark off. */
+  /** Marks a row of the active result to be deleted, or takes the mark off. A new row is simply removed. */
   setRowDeleted(id: string, row: number, deleted: boolean): void
+  /** Starts a new row after the rows of the active result and selects it. Nothing is sent to the database. */
+  addRow(id: string): void
+  /** Starts a new row holding what another row shows, except what the database numbers by itself. */
+  duplicateRow(id: string, row: number): void
   discardChanges(id: string): void
   /** Asks the driver for the statements that would save the active result's changes. Runs nothing. */
   planSave(id: string): Promise<string[]>
@@ -149,6 +179,7 @@ export const ROW_LIMITS = [500, 1000, 5000, 25_000, 100_000]
 
 let queryCounter = 0
 let resultCounter = 0
+let newRowCounter = 0
 /** What to carry on with if the person agrees to discard their changes. */
 let afterDiscard: (() => void) | null = null
 
@@ -156,10 +187,10 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** How many changes are staged: every edited cell, and every row marked to be deleted. */
+/** How many changes are staged: every edited cell, every row marked to be deleted, and every new row. */
 export function countChanges(staged: StagedChanges | undefined): number {
   if (!staged) return 0
-  let count = Object.keys(staged.deleted).length
+  let count = Object.keys(staged.deleted).length + staged.added.length
   for (const [row, cells] of Object.entries(staged.cells)) {
     // A row that will be deleted counts once, whatever was typed into it first.
     if (!staged.deleted[Number(row)]) count += Object.keys(cells).length
@@ -177,19 +208,57 @@ function sameAsStored(stored: CellValue, value: string | null): boolean {
   return typeof stored !== 'object' && String(stored) === value
 }
 
-/** The staged changes as the driver wants them: one per changed row, top to bottom. */
+function cellChanges(cells: Record<number, string | null>): { column: number; value: string | null }[] {
+  return Object.entries(cells)
+    .map(([column, value]) => ({ column: Number(column), value }))
+    .sort((a, b) => a.column - b.column)
+}
+
+/**
+ * The staged changes as the driver wants them: one per changed row, top to
+ * bottom, then the new rows. New rows go last so that one can take a value a
+ * deleted or edited row gives up, such as a unique email address.
+ */
 function rowChanges(rows: CellValue[][], key: number[], staged: StagedChanges): RowChange[] {
   const changed = new Set([...Object.keys(staged.cells), ...Object.keys(staged.deleted)].map(Number))
-  return [...changed]
+  const existing = [...changed]
     .sort((a, b) => a - b)
     .map((row): RowChange => {
       const rowKey = key.map((column) => rows[row][column])
       if (staged.deleted[row]) return { kind: 'delete', key: rowKey }
-      const set = Object.entries(staged.cells[row])
-        .map(([column, value]) => ({ column: Number(column), value }))
-        .sort((a, b) => a.column - b.column)
-      return { kind: 'update', key: rowKey, set }
+      return { kind: 'update', key: rowKey, set: cellChanges(staged.cells[row]) }
     })
+  return [...existing, ...staged.added.map((row): RowChange => ({ kind: 'insert', set: cellChanges(row.cells) }))]
+}
+
+/**
+ * How many of the rows a save added are not among the rows read back after it.
+ * A statement's conditions, its order or the row limit can leave a new row out,
+ * and then it would vanish from the grid without a word.
+ *
+ * A row is looked for by its key: what was typed for it, or the number the
+ * database generated. Where the key is not known, or is of a kind whose stored
+ * form may differ from what was typed, nothing is claimed.
+ */
+function rowsOutside(before: RowsResult, added: NewRow[], ids: (string | null)[], after: StatementResult): number {
+  const editing = before.editing
+  if (!editing || added.length === 0 || after.kind !== 'rows') return 0
+  if (after.columns.length !== before.columns.length) return 0
+  const { key } = editing
+  const kinds = key.map((column) => before.columns[column].kind)
+  if (!kinds.every((kind) => kind === 'number' || kind === 'text')) return 0
+  // 007 and 7 are the same number, and a CHAR column drops the spaces typed after a value.
+  const comparable = (values: (CellValue | string)[]) =>
+    JSON.stringify(values.map((value, at) => (kinds[at] === 'number' ? String(Number(value)) : String(value).trimEnd())))
+
+  const present = new Set(after.rows.map((row) => comparable(key.map((column) => row[column]))))
+  const auto = editing.adding?.auto ?? []
+  let outside = 0
+  added.forEach((row, index) => {
+    const values = key.map((column) => row.cells[column] ?? (auto.includes(column) ? ids[index] : null))
+    if (values.every((value) => value != null) && !present.has(comparable(values as string[]))) outside += 1
+  })
+  return outside
 }
 
 export const useStore = create<State>()((set, get) => {
@@ -214,10 +283,38 @@ export const useStore = create<State>()((set, get) => {
     patchTab(id, (tab) => {
       const entry = tab.results[tab.activeResult] as ResultEntry | undefined
       if (entry?.result.kind !== 'rows' || !entry.result.editing) return {}
-      const staged = change(entry.staged ?? { cells: {}, deleted: {} }, entry)
-      const next: ResultEntry = { ...entry, staged: countChanges(staged) > 0 ? staged : undefined, saved: undefined }
-      return { results: tab.results.map((item) => (item === entry ? next : item)) }
+      const staged = change(entry.staged ?? { cells: {}, deleted: {}, added: [] }, entry)
+      const next: ResultEntry = {
+        ...entry,
+        staged: countChanges(staged) > 0 ? staged : undefined,
+        saved: undefined,
+        outside: undefined,
+      }
+      const total = entry.result.rows.length + (next.staged?.added.length ?? 0)
+      return {
+        results: tab.results.map((item) => (item === entry ? next : item)),
+        // A new row that was removed may have been the selected one. Stay near where it was.
+        selected:
+          tab.selected && tab.selected.row >= total
+            ? total > 0
+              ? { ...tab.selected, row: total - 1 }
+              : null
+            : tab.selected,
+      }
     })
+
+  /** Appends a new row to the active result, holding `cells`, and selects it in `column`. */
+  const appendRow = (id: string, cells: Record<number, string | null>, column?: number) => {
+    const tab = tabById(id)
+    const entry = tab?.results[tab.activeResult]
+    if (!tab || tab.running || entry?.result.kind !== 'rows' || !entry.result.editing?.adding) return
+    const { editing, rows } = entry.result
+    const before = entry.staged?.added.length ?? 0
+    restage(id, (staged) => ({ ...staged, added: [...staged.added, { id: ++newRowCounter, cells }] }))
+    // Start where typing is likely to: the first column the database does not fill in by itself.
+    const first = editing.editable.find((index) => !editing.adding!.auto.includes(index)) ?? editing.editable[0] ?? 0
+    patchTab(id, { selected: { row: rows.length + before, col: column ?? first } })
+  }
 
   /**
    * Holds back something that would throw away unsaved changes until the person
@@ -523,9 +620,19 @@ export const useStore = create<State>()((set, get) => {
       restage(id, (staged, entry) => {
         if (entry.result.kind !== 'rows') return staged
         const { editing, rows } = entry.result
-        const stored = rows[row]?.[col]
-        if (stored === undefined || !editing?.editable.includes(col)) return staged
+        if (!editing?.editable.includes(col)) return staged
         if (value === null && !editing.nullable.includes(col)) return staged
+        if (row >= rows.length) {
+          // A new row has nothing stored to compare with: whatever is typed is its value.
+          const at = row - rows.length
+          if (!staged.added[at]) return staged
+          const added = staged.added.map((item, index) =>
+            index === at ? { ...item, cells: { ...item.cells, [col]: value } } : item,
+          )
+          return { ...staged, added }
+        }
+        const stored = rows[row]?.[col]
+        if (stored === undefined) return staged
 
         const cells = { ...staged.cells, [row]: { ...staged.cells[row] } }
         // Typing a cell back to what it holds takes the change away.
@@ -537,7 +644,20 @@ export const useStore = create<State>()((set, get) => {
     },
 
     revertCell(id, { row, col }) {
-      restage(id, (staged) => {
+      restage(id, (staged, entry) => {
+        const stored = entry.result.kind === 'rows' ? entry.result.rows.length : 0
+        if (row >= stored) {
+          // In a new row, taking a value back leaves the cell not set.
+          const at = row - stored
+          if (staged.added[at]?.cells[col] === undefined) return staged
+          const added = staged.added.map((item, index) => {
+            if (index !== at) return item
+            const cells = { ...item.cells }
+            delete cells[col]
+            return { ...item, cells }
+          })
+          return { ...staged, added }
+        }
         if (staged.cells[row]?.[col] === undefined) return staged
         const cells = { ...staged.cells, [row]: { ...staged.cells[row] } }
         delete cells[row][col]
@@ -548,12 +668,45 @@ export const useStore = create<State>()((set, get) => {
 
     setRowDeleted(id, row, deleted) {
       restage(id, (staged, entry) => {
-        if (entry.result.kind !== 'rows' || row < 0 || row >= entry.result.rows.length) return staged
+        if (entry.result.kind !== 'rows' || row < 0) return staged
+        if (row >= entry.result.rows.length) {
+          // A new row is not in the database, so there is nothing to mark: it just goes.
+          const at = row - entry.result.rows.length
+          return deleted ? { ...staged, added: staged.added.filter((_, index) => index !== at) } : staged
+        }
         const marked = { ...staged.deleted }
         if (deleted) marked[row] = true
         else delete marked[row]
         return { ...staged, deleted: marked }
       })
+    },
+
+    addRow(id) {
+      appendRow(id, {})
+    },
+
+    duplicateRow(id, row) {
+      const tab = tabById(id)
+      const entry = tab?.results[tab.activeResult]
+      if (!tab || entry?.result.kind !== 'rows' || !entry.result.editing?.adding) return
+      const { editing, rows } = entry.result
+      const staged = entry.staged
+      const cells: Record<number, string | null> = {}
+      for (const column of editing.editable) {
+        // A copy of a generated number would collide with the row it was copied from.
+        if (editing.adding!.auto.includes(column)) continue
+        if (row >= rows.length) {
+          const given = staged?.added[row - rows.length]?.cells[column]
+          if (given !== undefined) cells[column] = given
+          continue
+        }
+        // The copy holds what the row shows, so an edit that is not saved yet goes with it.
+        const change = staged?.deleted[row] ? undefined : staged?.cells[row]?.[column]
+        const value = change !== undefined ? change : rows[row]?.[column]
+        if (value === undefined || (typeof value === 'object' && value !== null)) continue
+        cells[column] = value === null ? null : String(value)
+      }
+      appendRow(id, cells, tab.selected?.col)
     },
 
     discardChanges(id) {
@@ -592,11 +745,15 @@ export const useStore = create<State>()((set, get) => {
         if (!outcome.ok) return outcome
 
         // The changes are in the database now, whatever happens to the reload below.
-        replaceEntry({ staged: undefined, saved: countChanges(entry.staged) })
+        replaceEntry({ staged: undefined, saved: countChanges(entry.staged), outside: undefined })
         // Read the rows again instead of trusting what was typed: the stored value is what
         // the server made of it, and a trigger or a default may have changed more.
         const result = await api.sessions.execute(sessionId, entry.sql, { rowLimit: tab.rowLimit })
-        replaceEntry({ result })
+        // The new rows were the last statements, in the order they were added.
+        const added = entry.staged?.added ?? []
+        const ids = added.map((_, index) => outcome.insertIds?.[statements.length - added.length + index] ?? null)
+        const outside = entry.result.kind === 'rows' ? rowsOutside(entry.result, added, ids, result) : 0
+        replaceEntry({ result, outside: outside || undefined })
         patchTab(id, { database: result.database })
         return outcome
       } catch (error) {
