@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { CircleAlert, CircleCheck, LoaderCircle, Lock, PanelRight, Pencil, Plus } from 'lucide-react'
 import type { ErrorResult, OkResult, RowsResult } from '@shared/driver'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ResizeHandle'
-import { formatCount, formatDuration, plural } from '@/lib/format'
+import { cellText, formatCount, formatDuration, plural } from '@/lib/format'
 import { MOD, cn, shortcut } from '@/lib/utils'
 import { ROW_LIMITS, countChanges, useStore, type ResultEntry, type Tab } from '@/store'
+import { FindBar } from './FindBar'
 import { ResultsGrid } from './ResultsGrid'
 import { SaveChangesDialog, type SavePlan } from './SaveChangesDialog'
+import { StatementButton } from './StatementButton'
+import { TableViewBar } from './TableViewBar'
 import { ValueInspector } from './ValueInspector'
 
 function Statement({ sql }: { sql: string }) {
@@ -130,6 +133,8 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
     planSave,
     save,
     cancel,
+    changeView,
+    setFind,
   } = useStore.getState()
   const [inspectorWidth, setInspectorWidth] = useState(380)
   /** The cell the grid asked the value panel to edit, as "row:column", and which request that was. */
@@ -144,8 +149,35 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
   // New rows are shown after the rows of the result.
   const added = staged?.added ?? []
   const stored = rowsResult?.rows.length ?? 0
-  const selected = rowsResult && tab.selected && tab.selected.row < stored + added.length ? tab.selected : null
+
+  // A tab that shows one table is filtered by the database. Any other result can only be searched
+  // where it is, in the rows that were loaded. The two are kept apart so neither is taken for the other.
+  const table = tab.table
+  const find = table ? '' : (entry?.find ?? '')
+  // Typing stays quick on a large result: the rows catch up a moment later.
+  const lookedFor = useDeferredValue(find).trim().toLowerCase()
+  const visible = useMemo(() => {
+    if (!rowsResult || !lookedFor) return undefined
+    const kept: number[] = []
+    rowsResult.rows.forEach((row, index) => {
+      if (row.some((value) => cellText(value).toLowerCase().includes(lookedFor))) kept.push(index)
+    })
+    return kept
+  }, [rowsResult, lookedFor])
+
+  const inView = (row: number) => row >= stored || !visible || visible.includes(row)
+  const selected =
+    rowsResult && tab.selected && tab.selected.row < stored + added.length && inView(tab.selected.row)
+      ? tab.selected
+      : null
   const selectedNew = selected && selected.row >= stored ? added[selected.row - stored] : undefined
+
+  // The header shows an arrow only while the order in force is the one a click on it made.
+  const sorted = table && tab.sorted?.orderBy === tab.view.orderBy ? tab.sorted : null
+  const sortedColumn = sorted && rowsResult ? rowsResult.columns.findIndex((c) => c.source?.column === sorted.column) : -1
+  const sort = sorted && sortedColumn >= 0 ? { column: sortedColumn, direction: sorted.direction } : null
+  /** The columns a filter or an order can be asked for by a click, when the rows are a table's and nothing is running. */
+  const viewColumns = table && rowsResult && !tab.running ? rowsResult.columns : null
   const changes = countChanges(staged)
   const editing = tab.running ? undefined : rowsResult?.editing
 
@@ -309,6 +341,30 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
         </Button>
       </div>
 
+      {table ? (
+        // Its own boxes for each tab, so what was typed in one is not shown in another.
+        <TableViewBar key={tab.id} tab={{ ...tab, table }}>
+          {entry && <StatementButton sql={entry.sql} />}
+        </TableViewBar>
+      ) : (
+        rowsResult &&
+        entry &&
+        stored > 0 && (
+          <FindBar
+            find={find}
+            matches={visible?.length ?? stored}
+            loaded={stored}
+            truncated={rowsResult.truncated}
+            onFind={(text) => setFind(tab.id, text)}
+          >
+            <StatementButton
+              sql={entry.sql}
+              note={find ? 'The search is not part of it. It only narrows the rows shown here.' : undefined}
+            />
+          </FindBar>
+        )
+      )}
+
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1">
           {!entry ? (
@@ -368,6 +424,28 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
               onDeleteRow={(row, deleted) => setRowDeleted(tab.id, row, deleted)}
               onAddRow={() => addRow(tab.id)}
               onDuplicateRow={(row) => duplicateRow(tab.id, row)}
+              visible={visible}
+              emptyNote={
+                visible?.length === 0 ? `None of the ${plural(stored, 'loaded row')} contains “${find.trim()}”.` : undefined
+              }
+              startOver={`${entry.views ?? 0}:${lookedFor}`}
+              sort={sort}
+              onSort={
+                viewColumns
+                  ? (column) => {
+                      const now = sort?.column === column ? sort.direction : null
+                      // Lowest first, then highest first, then back to the table's own order.
+                      const direction = now === null ? 'asc' : now === 'asc' ? 'desc' : null
+                      void changeView(tab.id, { kind: 'sort', column: viewColumns[column], direction })
+                    }
+                  : undefined
+              }
+              onFilter={
+                viewColumns
+                  ? (column, value, exclude) =>
+                      void changeView(tab.id, { kind: 'filter', column: viewColumns[column], value, exclude })
+                  : undefined
+              }
             />
           )}
         </div>
