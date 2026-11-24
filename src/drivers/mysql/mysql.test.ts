@@ -918,6 +918,11 @@ describe.skipIf(!port)('mysql driver', () => {
         expect(view).toEqual({ where: "(bin = 'A1' OR bin = 'B2') AND `qty` = 5", orderBy: 'id DESC' })
         // Without the brackets the nut would be here too.
         expect(ids(await open(view))).toEqual([4, 1])
+
+        // A comment at the end of what is there stays at the end, after the bracket has closed.
+        const noted = await filtered(qty, 5, false, { where: "bin = 'A1' OR bin = 'B2' -- two bins", orderBy: 'id DESC' })
+        expect(noted.where).toBe("(bin = 'A1' OR bin = 'B2') AND `qty` = 5 -- two bins")
+        expect(ids(await open(noted))).toEqual([4, 1])
       })
 
       it('will not look for a row by an approximate number', async () => {
