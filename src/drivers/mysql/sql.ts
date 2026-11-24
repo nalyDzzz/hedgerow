@@ -2,7 +2,15 @@
  * How MySQL writes names and values in a statement. Every statement the app
  * generates for MySQL is put together here, so quoting lives in one place.
  */
-import type { CellChange, CellValue, EditRequest, ResultColumn, TableRef } from '@shared/driver'
+import type {
+  CellChange,
+  CellValue,
+  EditRequest,
+  ResultColumn,
+  TableRef,
+  TableView,
+  ViewChange,
+} from '@shared/driver'
 import { DriverError } from '../error'
 
 /** The parts of a session's sql_mode that change how a statement has to be written. */
@@ -71,8 +79,78 @@ export function literal(value: CellValue, column: ResultColumn, mode: SqlMode): 
   return quoteString(value, mode)
 }
 
-export function tableQuery(table: TableRef): string {
-  return `SELECT * FROM ${quoteTable(table)}`
+/** What a person typed after WHERE or ORDER BY, without the space and the semicolon that may trail it. */
+function fragment(text: string): string {
+  return text.trim().replace(/[;\s]+$/, '')
+}
+
+/**
+ * Reads a table under its own name, never an alias, so the result can be
+ * edited. Each part of a view starts a line of its own: a `--` comment typed at
+ * the end of a condition then ends with that line, and cannot swallow the order.
+ */
+export function tableQuery(table: TableRef, view?: TableView): string {
+  const where = fragment(view?.where ?? '')
+  const orderBy = fragment(view?.orderBy ?? '')
+  return (
+    `SELECT * FROM ${quoteTable(table)}` +
+    (where ? `\nWHERE ${where}` : '') +
+    (orderBy ? `\nORDER BY ${orderBy}` : '')
+  )
+}
+
+/** The stored column a result column shows, quoted. A view can only name what the table holds. */
+function storedName(column: ResultColumn): string {
+  if (!column.source) {
+    throw new DriverError(
+      `\`${column.name}\` is worked out by the query and not stored in the table, so it cannot be used here.`,
+      'NOT_STORED',
+    )
+  }
+  return quoteIdentifier(column.source.column)
+}
+
+/** The test that a column holds a value, or with `exclude` that it does not, as it would stand after WHERE. */
+export function columnTest(column: ResultColumn, value: CellValue, exclude: boolean, mode: SqlMode): string {
+  const name = storedName(column)
+  if (value === null) return `${name} IS ${exclude ? 'NOT ' : ''}NULL`
+  if (/^(FLOAT|DOUBLE)/.test(column.dbType)) {
+    throw new DriverError(
+      `\`${column.name}\` holds approximate numbers (${column.dbType}), and rows cannot be reliably found by one. ` +
+        'Type a range into the filter instead.',
+      'INEXACT',
+    )
+  }
+  // Compared with plain text, a JSON document matches nothing: the text has to be read as JSON too.
+  const written = column.kind === 'json' ? `CAST(${literal(value, column, mode)} AS JSON)` : literal(value, column, mode)
+  if (!exclude) return `${name} = ${written}`
+  // A row that holds NULL does not hold this value either, but `<>` alone would drop it.
+  return column.nullable ? `(${name} <> ${written} OR ${name} IS NULL)` : `${name} <> ${written}`
+}
+
+/** Adds a condition to the ones a view already has, so that all of them must hold. */
+export function andCondition(where: string, condition: string): string {
+  const existing = fragment(where)
+  if (!existing) return condition
+  // Asking for the same thing twice changes nothing.
+  if (existing.split(/\s+AND\s+/i).includes(condition)) return existing
+  // AND binds tighter than OR, so what is there keeps its meaning only inside brackets.
+  const kept = /\bx?or\b|\|\|/i.test(existing) ? `(${existing})` : existing
+  // A comment runs to the end of the line and would swallow a condition put after it.
+  return /--|#|\/\*/.test(existing) ? `${condition} AND ${kept}` : `${kept} AND ${condition}`
+}
+
+/** The view after one change asked for in the grid. */
+export function changedView(view: TableView, change: ViewChange, mode: SqlMode): TableView {
+  if (change.kind === 'sort') {
+    const name = storedName(change.column)
+    const orderBy = change.direction === null ? '' : change.direction === 'desc' ? `${name} DESC` : name
+    return { where: fragment(view.where), orderBy }
+  }
+  return {
+    where: andCondition(view.where, columnTest(change.column, change.value, change.exclude, mode)),
+    orderBy: fragment(view.orderBy),
+  }
 }
 
 /**

@@ -51,7 +51,8 @@ const handlers: Handlers = {
   setDatabase: (sessionId, database) => session(sessionId).setDatabase(database),
   execute: (sessionId, sql, options) => session(sessionId).execute(sql, options),
   cancel: (sessionId) => session(sessionId).cancel(),
-  tableQuery: (sessionId, table) => session(sessionId).tableQuery(table),
+  tableQuery: (sessionId, table, view) => session(sessionId).tableQuery(table, view),
+  changeView: (sessionId, view, change) => session(sessionId).changeView(view, change),
   planEdits: (sessionId, request) => session(sessionId).planEdits(request),
   applyEdits: (sessionId, statements) => session(sessionId).applyEdits(statements),
 }

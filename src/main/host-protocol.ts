@@ -11,6 +11,8 @@ import type {
   StatementResult,
   TableInfo,
   TableRef,
+  TableView,
+  ViewChange,
 } from '@shared/driver'
 
 export interface HostMethods {
@@ -26,7 +28,8 @@ export interface HostMethods {
   setDatabase(sessionId: string, database: string): void
   execute(sessionId: string, sql: string, options: ExecuteOptions): StatementResult
   cancel(sessionId: string): void
-  tableQuery(sessionId: string, table: TableRef): string
+  tableQuery(sessionId: string, table: TableRef, view?: TableView): string
+  changeView(sessionId: string, view: TableView, change: ViewChange): TableView
   planEdits(sessionId: string, request: EditRequest): string[]
   applyEdits(sessionId: string, statements: string[]): SaveResult
 }

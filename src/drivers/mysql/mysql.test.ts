@@ -5,7 +5,17 @@
  *   TEST_MYSQL_PORT=3307 TEST_MYSQL_PASSWORD=devpass pnpm test
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { BinaryCell, ConnectionParams, DriverSession, EditRequest, RowChange, RowsResult } from '@shared/driver'
+import type {
+  BinaryCell,
+  CellValue,
+  ConnectionParams,
+  DriverSession,
+  EditRequest,
+  ResultColumn,
+  RowChange,
+  RowsResult,
+  TableView,
+} from '@shared/driver'
 import { mysqlDriver } from './index'
 
 const port = Number(process.env.TEST_MYSQL_PORT)
@@ -774,6 +784,170 @@ describe.skipIf(!port)('mysql driver', () => {
         const outcome = await session.applyEdits(await session.planEdits(request(empty, [add([])])))
         expect(outcome).toMatchObject({ ok: true, insertIds: ['1'] })
         expect((await select('SELECT * FROM fresh')).rows).toEqual([[1, 'new']])
+      })
+    })
+
+    describe('a table opened with a filter and an order', () => {
+      const stock = { database: DB, table: 'stock' }
+      const all: TableView = { where: '', orderBy: '' }
+
+      /** The rows a view keeps, read the way the app reads them. */
+      async function open(view: TableView): Promise<RowsResult> {
+        return select(await session.tableQuery(stock, view))
+      }
+
+      /** The view after a click on a cell: only the rows with this value, or only the others. */
+      async function filtered(column: ResultColumn, value: CellValue, exclude = false, from = all) {
+        return session.changeView(from, { kind: 'filter', column, value, exclude })
+      }
+
+      const ids = (result: RowsResult) => result.rows.map((row) => row[0])
+
+      beforeAll(async () => {
+        await run(
+          `CREATE TABLE stock (
+             id INT PRIMARY KEY AUTO_INCREMENT,
+             sku VARCHAR(20) NOT NULL,
+             bin CHAR(2),
+             qty INT,
+             big BIGINT UNSIGNED,
+             cost DECIMAL(10, 2),
+             weight FLOAT,
+             meta JSON,
+             seen DATETIME,
+             note TEXT
+           )`,
+        )
+        await run(
+          `INSERT INTO stock (sku, bin, qty, big, cost, weight, meta, seen, note) VALUES
+             ('bolt', 'A1', 5, 9007199254740993, 9.50, 1.1, '{"tags": ["m6", "steel"], "n": 1}', '2026-01-02 03:04:05', 'plain'),
+             ('nut', 'A1', 12, 9007199254740992, 0.10, 0.2, '{"n": 1, "tags": ["m6", "steel"]}', '2026-01-02 03:04:06', 'it''s'),
+             ('washer', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+             ('screw', 'B2', 5, 1, 9.5, 3, '[]', NULL, 'C:\\\\temp\\\\x'),
+             ('rivet', 'b2', 0, 2, 12.00, 4, '{"tags": []}', '2026-01-02 03:04:05', '100%_done')`,
+        )
+      })
+
+      it('says for each column whether it can hold NULL', async () => {
+        const result = await open(all)
+        expect(result.columns.map((column) => [column.name, column.nullable]).slice(0, 4)).toEqual([
+          ['id', false],
+          ['sku', false],
+          ['bin', true],
+          ['qty', true],
+        ])
+      })
+
+      it('reads only the rows a view keeps, in its order, and they can still be edited', async () => {
+        const view = { where: "bin = 'A1' OR qty = 0", orderBy: 'qty DESC, id' }
+        expect(await session.tableQuery(stock, view)).toBe(
+          `SELECT * FROM \`${DB}\`.\`stock\`\nWHERE bin = 'A1' OR qty = 0\nORDER BY qty DESC, id`,
+        )
+        const result = await open(view)
+        expect(result.rows.map((row) => row[1])).toEqual(['nut', 'bolt', 'rivet'])
+        expect(result.readOnly).toBeUndefined()
+        expect(result.editing).toMatchObject({ table: stock, key: [0], adding: { required: [1], auto: [0] } })
+
+        // And a change made there is planned against the table itself.
+        const statements = await session.planEdits(
+          request(result, [{ kind: 'update', key: [result.rows[0][0]], set: [{ column: 3, value: '13' }] }]),
+        )
+        expect(statements).toEqual([`UPDATE \`${DB}\`.\`stock\` SET \`qty\` = 13 WHERE \`id\` = 2`])
+      })
+
+      it('finds the rows that hold a value picked from a cell, whatever its type', async () => {
+        const table = await open({ where: '', orderBy: 'id' })
+        const column = (name: string) => table.columns.findIndex((item) => item.name === name)
+        /** The ids of the rows that hold what row `row` holds in `name`. */
+        const sameAs = async (row: number, name: string) => {
+          const index = column(name)
+          return ids(await open({ ...(await filtered(table.columns[index], table.rows[row][index])), orderBy: 'id' }))
+        }
+
+        expect(await sameAs(0, 'sku')).toEqual([1])
+        expect(await sameAs(0, 'qty')).toEqual([1, 4])
+        // One apart, and both beyond what a double can tell apart.
+        expect(await sameAs(0, 'big')).toEqual([1])
+        expect(await sameAs(1, 'big')).toEqual([2])
+        // 9.50 and 9.5 are the same amount.
+        expect(await sameAs(0, 'cost')).toEqual([1, 4])
+        expect(await sameAs(0, 'seen')).toEqual([1, 5])
+        // The same document, whatever order its keys were written in.
+        expect(await sameAs(0, 'meta')).toEqual([1, 2])
+        expect(await sameAs(3, 'meta')).toEqual([4])
+        // Quotes, backslashes and the wildcards of LIKE are all just text.
+        expect(await sameAs(1, 'note')).toEqual([2])
+        expect(await sameAs(3, 'note')).toEqual([4])
+        expect(await sameAs(4, 'note')).toEqual([5])
+        // The column's own collation decides what counts as the same text.
+        expect(await sameAs(3, 'bin')).toEqual([4, 5])
+      })
+
+      it('finds text with a backslash when the session does not treat it as an escape', async () => {
+        const table = await open({ where: '', orderBy: 'id' })
+        const note = table.columns.findIndex((item) => item.name === 'note')
+        await run("SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')")
+        try {
+          const view = await filtered(table.columns[note], table.rows[3][note])
+          expect(view.where).toBe("`note` = 'C:\\temp\\x'")
+          expect(ids(await open(view))).toEqual([4])
+        } finally {
+          await run('SET SESSION sql_mode = DEFAULT')
+        }
+      })
+
+      it('keeps the rows that hold NULL when a value is excluded', async () => {
+        const table = await open({ where: '', orderBy: 'id' })
+        const bin = table.columns[2]
+        const view = await filtered(bin, 'A1', true)
+        expect(view.where).toBe("(`bin` <> 'A1' OR `bin` IS NULL)")
+        expect(ids(await open({ ...view, orderBy: 'id' }))).toEqual([3, 4, 5])
+        // A column that cannot hold NULL needs no such care.
+        expect((await filtered(table.columns[1], 'bolt', true)).where).toBe("`sku` <> 'bolt'")
+      })
+
+      it('asks for NULL, and for anything but NULL', async () => {
+        const qty = (await open(all)).columns[3]
+        expect(ids(await open(await filtered(qty, null)))).toEqual([3])
+        expect(ids(await open({ ...(await filtered(qty, null, true)), orderBy: 'id' }))).toEqual([1, 2, 4, 5])
+      })
+
+      it('adds to the filter that is there without changing what it meant', async () => {
+        const qty = (await open(all)).columns[3]
+        const view = await filtered(qty, 5, false, { where: "bin = 'A1' OR bin = 'B2'", orderBy: 'id DESC' })
+        expect(view).toEqual({ where: "(bin = 'A1' OR bin = 'B2') AND `qty` = 5", orderBy: 'id DESC' })
+        // Without the brackets the nut would be here too.
+        expect(ids(await open(view))).toEqual([4, 1])
+      })
+
+      it('will not look for a row by an approximate number', async () => {
+        const table = await open(all)
+        const weight = table.columns.findIndex((item) => item.name === 'weight')
+        await expect(filtered(table.columns[weight], table.rows[0][weight])).rejects.toThrow(/approximate numbers \(FLOAT\)/)
+      })
+
+      it('orders by one column either way, and stops', async () => {
+        const qty = (await open(all)).columns[3]
+        const sorted = (direction: 'asc' | 'desc' | null, from = all) =>
+          session.changeView(from, { kind: 'sort', column: qty, direction })
+
+        const up = await sorted('asc')
+        expect(up).toEqual({ where: '', orderBy: '`qty`' })
+        expect((await open(up)).rows.map((row) => row[3])).toEqual([null, 0, 5, 5, 12])
+        const down = await sorted('desc', { where: 'qty IS NOT NULL', orderBy: '`qty`' })
+        expect(down).toEqual({ where: 'qty IS NOT NULL', orderBy: '`qty` DESC' })
+        expect((await open(down)).rows.map((row) => row[3])).toEqual([12, 5, 5, 0])
+        expect(await sorted(null, down)).toEqual({ where: 'qty IS NOT NULL', orderBy: '' })
+      })
+
+      it('keeps a comment in the filter from swallowing the order', async () => {
+        const result = await open({ where: 'qty > 0 -- in stock', orderBy: 'qty DESC, id' })
+        expect(result.rows.map((row) => row[1])).toEqual(['nut', 'bolt', 'screw'])
+      })
+
+      it('leaves a condition that makes no sense for the server to refuse', async () => {
+        const result = await session.execute(await session.tableQuery(stock, { where: 'colour = 1', orderBy: '' }), options)
+        expect(result).toMatchObject({ kind: 'error', code: 'ER_BAD_FIELD_ERROR' })
       })
     })
 
