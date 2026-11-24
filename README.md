@@ -23,8 +23,9 @@ be added without touching the UI.
 - Run the statement under the cursor, the selection, or the whole tab; stop a running statement
 - A results grid that stays fast on large results, with resizable columns and keyboard navigation
 - A value panel that formats JSON, including JSON stored in text columns, without altering numbers
-- Edit cells and delete rows in the results grid. Changes are staged, you see the exact SQL before it runs,
-  and a save is one transaction that takes effect only if every statement changes exactly one row
+- Edit cells, add rows and delete rows in the results grid. Changes are staged, you see the exact SQL before
+  it runs, and a save is one transaction that takes effect only if every statement changes exactly one row.
+  A new row sets only the cells you fill in, and leaves the rest to the table's defaults
 - A color per connection that tints the window, so production never looks like local
 - A notice when a newer version is out, with a button that downloads it
 - Light and dark themes
@@ -118,7 +119,6 @@ in `package.json` differ. Read the draft, edit its notes, and publish it from th
 Planned, roughly in this order:
 
 - Filter and sort results from the results screen ([#12](https://github.com/nalyDzzz/hedgerow/issues/12))
-- Add rows from the results grid ([#14](https://github.com/nalyDzzz/hedgerow/issues/14))
 - Change a table's structure from the app ([#11](https://github.com/nalyDzzz/hedgerow/issues/11))
 - Query history ([#2](https://github.com/nalyDzzz/hedgerow/issues/2))
 - PostgreSQL ([#3](https://github.com/nalyDzzz/hedgerow/issues/3)) and SQLite
