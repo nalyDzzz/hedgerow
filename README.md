@@ -103,15 +103,15 @@ every change.
 
 ### Making a release
 
-Set the version in `package.json`, merge that, then push a matching tag:
+Set the version in `package.json`, merge that, then push a tag with the same number. For version 1.2.3:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
-CI builds and tests the installers and attaches them to a draft release. Read the draft, edit its notes, and
-publish it from the releases page.
+CI builds and tests the installers and attaches them to a draft release. It stops if the tag and the version
+in `package.json` differ. Read the draft, edit its notes, and publish it from the releases page.
 
 ## Roadmap
 
