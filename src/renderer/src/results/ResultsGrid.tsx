@@ -18,7 +18,24 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Ban, Copy, CopyPlus, Eraser, KeyRound, Lock, PanelRight, Pencil, Plus, Trash2, Undo2 } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  Ban,
+  CircleDashed,
+  Copy,
+  CopyPlus,
+  Eraser,
+  Funnel,
+  FunnelX,
+  KeyRound,
+  Lock,
+  PanelRight,
+  Pencil,
+  Plus,
+  Trash2,
+  Undo2,
+} from 'lucide-react'
 import type { CellValue, ResultColumn, RowsResult } from '@shared/driver'
 import {
   ContextMenu,
@@ -286,6 +303,25 @@ interface ResultsGridProps {
   onDeleteRow(row: number, deleted: boolean): void
   onAddRow(): void
   onDuplicateRow(row: number): void
+  /**
+   * The rows of the result to show, by their number in it and in rising order,
+   * when a search has narrowed them. Rows keep their numbers, so what is staged
+   * for one stays with it. New rows are always shown.
+   */
+  visible?: number[]
+  /** Said in place of the rows when there are none to show. */
+  emptyNote?: string
+  /**
+   * Changes when a filter, an order or a search has put other rows in the grid,
+   * which then starts from the top. Rows read back after a save keep their place.
+   */
+  startOver?: string
+  /** The column the rows are ordered by, when a click on a header ordered them. */
+  sort?: { column: number; direction: 'asc' | 'desc' } | null
+  /** Present when a click on a header can order the rows by that column. */
+  onSort?(column: number): void
+  /** Present when the rows can be narrowed to those that hold a value in a column, or to those that do not. */
+  onFilter?(column: number, value: CellValue, exclude: boolean): void
 }
 
 export function ResultsGrid({
@@ -302,6 +338,12 @@ export function ResultsGrid({
   onDeleteRow,
   onAddRow,
   onDuplicateRow,
+  visible,
+  emptyNote,
+  startOver,
+  sort,
+  onSort,
+  onFilter,
 }: ResultsGridProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const [editor, setEditor] = useState<(CellRef & { initial: string; typed: boolean }) | null>(null)
@@ -309,11 +351,36 @@ export function ResultsGrid({
   const editAfterMenu = useRef<CellRef | null>(null)
   /** Set when the grid itself is about to move the selection somewhere that may be out of view. */
   const revealNext = useRef(false)
+  /** True from the press that starts dragging a column's edge until the next press on a header. */
+  const draggedEdge = useRef(false)
   const { rows } = result
   const editing = editable ? result.editing : undefined
   // New rows come after the rows of the result, and are numbered on from them.
   const added = staged?.added ?? NO_NEW_ROWS
-  const total = rows.length + added.length
+  /** How many rows of the result are on show: all of them, unless a search has narrowed them. */
+  const showing = visible ? visible.length : rows.length
+  const total = showing + added.length
+  /**
+   * A row is known by its number in the result, which is what selection and
+   * staged changes use. Its position is where it is drawn, counted from the
+   * top. The two only differ while a search hides some rows.
+   */
+  const rowAt = (position: number) =>
+    position >= showing ? rows.length + (position - showing) : visible ? visible[position] : position
+  /** -1 for a row a search has hidden. */
+  const positionOf = (row: number) => {
+    if (row >= rows.length) return showing + (row - rows.length)
+    if (!visible) return row
+    let low = 0
+    let high = visible.length - 1
+    while (low <= high) {
+      const middle = (low + high) >> 1
+      if (visible[middle] === row) return middle
+      if (visible[middle] < row) low = middle + 1
+      else high = middle - 1
+    }
+    return -1
+  }
   const unset = useMemo(() => unsetLabels(result), [result])
 
   const columns = useMemo<ColumnDef<typeof features, Row>[]>(
@@ -373,7 +440,8 @@ export function ResultsGrid({
   const acceptsNull = (col: number) => Boolean(editing?.nullable.includes(col))
 
   const reveal = (cell: CellRef) => {
-    virtualizer.scrollToIndex(cell.row, { align: 'auto' })
+    const position = positionOf(cell.row)
+    if (position >= 0) virtualizer.scrollToIndex(position, { align: 'auto' })
     const element = scroller.current
     if (!element) return
     const left = widths.slice(0, cell.col).reduce((sum, width) => sum + width, 0)
@@ -383,10 +451,11 @@ export function ResultsGrid({
     else if (right > element.scrollLeft + visible) element.scrollLeft = right - visible
   }
 
-  const select = (cell: CellRef) => {
+  /** Selects the cell at a position in the grid, or the nearest one there is. */
+  const selectAt = (position: number, col: number) => {
     const next = {
-      row: Math.min(Math.max(cell.row, 0), total - 1),
-      col: Math.min(Math.max(cell.col, 0), result.columns.length - 1),
+      row: rowAt(Math.min(Math.max(position, 0), total - 1)),
+      col: Math.min(Math.max(col, 0), result.columns.length - 1),
     }
     onSelect(next)
     reveal(next)
@@ -426,7 +495,7 @@ export function ResultsGrid({
     const cell = { row: editor.row, col: editor.col }
     setEditor(null)
     if (value !== undefined) onStage(cell, value)
-    if (move) select({ row: cell.row, col: cell.col + move })
+    if (move) selectAt(positionOf(cell.row), cell.col + move)
     // Not after a click elsewhere: the focus belongs to whatever was clicked.
     if (refocus) scroller.current?.focus({ preventScroll: true })
   }
@@ -452,7 +521,9 @@ export function ResultsGrid({
     if (!selected || total === 0) return
     const mod = event.ctrlKey || event.metaKey
     const page = Math.max(1, Math.floor((scroller.current?.clientHeight ?? 0) / ROW_HEIGHT) - 2)
-    let { row, col } = selected
+    // The keys move through the rows that are on show, in the order they are drawn.
+    let row = Math.max(positionOf(selected.row), 0)
+    let { col } = selected
 
     if (mod && event.key.toLowerCase() === 'c') {
       event.preventDefault()
@@ -522,18 +593,26 @@ export function ResultsGrid({
     }
 
     event.preventDefault()
-    select({ row, col })
+    selectAt(row, col)
   }
 
   const editorStyle = (cell: CellRef): CSSProperties => ({
-    top: HEADER_HEIGHT + cell.row * ROW_HEIGHT,
+    top: HEADER_HEIGHT + positionOf(cell.row) * ROW_HEIGHT,
     left: GUTTER_WIDTH + widths.slice(0, cell.col).reduce((sum, width) => sum + width, 0),
     width: widths[cell.col],
     height: ROW_HEIGHT,
   })
 
-  const menuCell = selected && selected.row < total ? selected : null
+  const menuCell = selected && selected.row < rows.length + added.length && positionOf(selected.row) >= 0 ? selected : null
   const menuNew = menuCell !== null && isNew(menuCell.row)
+  const menuValue = menuCell ? shown(menuCell) : undefined
+  // A value has to fit a one-line condition, and a binary one is only known by its first bytes.
+  const canFilter = menuValue !== undefined && !isBinary(menuValue) && !needsRoom(menuValue)
+
+  // Other rows start from the top. The columns stay where they were scrolled to.
+  useEffect(() => {
+    if (scroller.current) scroller.current.scrollTop = 0
+  }, [startOver])
   const menuColumn = menuCell ? result.columns[menuCell.col] : undefined
 
   return (
@@ -575,18 +654,45 @@ export function ResultsGrid({
                 const column = result.columns[index]
                 const fixed = editing !== undefined && !editing.editable.includes(index)
                 const name = column.table ? `${column.table}.${column.name}` : column.name
+                // Only a column the table stores can be put after ORDER BY by its name.
+                const sortable = onSort !== undefined && column.source !== undefined
+                const sorted = sort?.column === index ? sort.direction : undefined
+                const Arrow = sorted === 'desc' ? ArrowDown : ArrowUp
                 return (
                   <div
                     key={header.id}
                     role="columnheader"
-                    className="relative flex shrink-0 flex-col justify-center border-r border-border px-2.5"
+                    aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : undefined}
+                    className={cn(
+                      'relative flex shrink-0 flex-col justify-center border-r border-border px-2.5',
+                      sortable && 'hover:bg-muted',
+                    )}
                     style={cellStyles[index]}
-                    title={fixed ? `${name}. This column cannot be edited here.` : name}
+                    title={
+                      (fixed ? `${name}. This column cannot be edited here.` : name) +
+                      (sortable
+                        ? sorted === 'asc'
+                          ? '\nClick to order from the highest down.'
+                          : sorted === 'desc'
+                            ? '\nClick to take the order away.'
+                            : '\nClick to order the rows by it.'
+                        : '')
+                    }
+                    onMouseDown={() => (draggedEdge.current = false)}
+                    // Letting go of a column's edge over its header is the end of a drag, not a click on it.
+                    onClick={sortable ? () => !draggedEdge.current && onSort(index) : undefined}
                   >
                     <div className="flex items-center gap-1 text-[12px] font-medium leading-tight">
                       {column.primaryKey && <KeyRound className="size-3 shrink-0 text-tint" aria-label="Primary key" />}
                       <span className="truncate">{column.name}</span>
                       {fixed && <Lock className="size-2.5 shrink-0 text-faint" aria-label="Cannot be edited" />}
+                      {sorted && (
+                        <Arrow
+                          className="size-3 shrink-0 text-foreground"
+                          strokeWidth={2.5}
+                          aria-label={sorted === 'asc' ? 'Ordered from the lowest up' : 'Ordered from the highest down'}
+                        />
+                      )}
                     </div>
                     <div className="truncate font-mono text-[10px] leading-tight tracking-wide text-faint">
                       {column.dbType}
@@ -598,9 +704,12 @@ export function ResultsGrid({
                       )}
                       onMouseDown={(event) => {
                         event.stopPropagation()
+                        draggedEdge.current = true
                         header.getResizeHandler()(event)
                       }}
                       onTouchStart={header.getResizeHandler()}
+                      // Letting go of the handle is not a click on the header.
+                      onClick={(event) => event.stopPropagation()}
                       onDoubleClick={(event) => {
                         event.stopPropagation()
                         header.column.resetSize()
@@ -612,37 +721,40 @@ export function ResultsGrid({
             </div>
 
             {virtualizer.getVirtualItems().map((item) => {
-              if (isNew(item.index)) {
-                const row = added[item.index - rows.length]
+              const index = rowAt(item.index)
+              if (isNew(index)) {
+                const row = added[index - rows.length]
                 // The count can run a render ahead of the rows when one was just removed.
                 if (!row) return null
                 return (
                   <GridRow
                     key={`new:${row.id}`}
-                    index={item.index}
+                    index={index}
                     top={item.start}
                     row={undefined}
                     columns={result.columns}
                     cellStyles={cellStyles}
-                    selectedCol={selected?.row === item.index ? selected.col : -1}
+                    selectedCol={selected?.row === index ? selected.col : -1}
                     edits={row.cells}
                     deleted={false}
                     unset={unset}
                   />
                 )
               }
-              const deleted = isDeleted(item.index)
+              // Likewise when a search has just narrowed the rows.
+              if (index === undefined || index >= rows.length) return null
+              const deleted = isDeleted(index)
               return (
                 <GridRow
-                  key={item.index}
-                  index={item.index}
+                  key={index}
+                  index={index}
                   top={item.start}
-                  row={rows[item.index]}
+                  row={rows[index]}
                   columns={result.columns}
                   cellStyles={cellStyles}
-                  selectedCol={selected?.row === item.index ? selected.col : -1}
+                  selectedCol={selected?.row === index ? selected.col : -1}
                   // A row that will be deleted shows what is stored, struck through.
-                  edits={deleted ? undefined : staged?.cells[item.index]}
+                  edits={deleted ? undefined : staged?.cells[index]}
                   deleted={deleted}
                 />
               )
@@ -749,6 +861,31 @@ export function ResultsGrid({
                 <ContextMenuSeparator />
               </>
             )}
+            {onFilter && menuColumn.source && (
+              <>
+                <ContextMenuItem
+                  disabled={!canFilter}
+                  onSelect={() => menuValue !== undefined && onFilter(menuCell.col, menuValue, false)}
+                >
+                  <Funnel />
+                  Filter by this value
+                </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={!canFilter}
+                  onSelect={() => menuValue !== undefined && onFilter(menuCell.col, menuValue, true)}
+                >
+                  <FunnelX />
+                  Exclude this value
+                </ContextMenuItem>
+                {menuValue !== null && menuColumn.nullable && (
+                  <ContextMenuItem onSelect={() => onFilter(menuCell.col, null, false)}>
+                    <CircleDashed />
+                    Only rows with NULL here
+                  </ContextMenuItem>
+                )}
+                <ContextMenuSeparator />
+              </>
+            )}
             <ContextMenuItem onSelect={() => void navigator.clipboard.writeText(cellText(shown(menuCell) ?? ''))}>
               <Copy />
               Copy
@@ -761,6 +898,11 @@ export function ResultsGrid({
           </ContextMenuContent>
         )}
       </ContextMenu>
+      {total === 0 && emptyNote && (
+        <p className="sticky left-0 max-w-[60ch] p-4 text-[12.5px] text-muted-foreground" role="status">
+          {emptyNote}
+        </p>
+      )}
     </div>
   )
 }
