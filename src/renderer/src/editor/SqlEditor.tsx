@@ -10,7 +10,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { MySQL, sql, type SQLNamespace } from '@codemirror/lang-sql'
 import { bracketMatching, indentOnInput } from '@codemirror/language'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
-import { Compartment, EditorState, Prec } from '@codemirror/state'
+import { Annotation, Compartment, EditorState, Prec, Transaction } from '@codemirror/state'
 import {
   EditorView,
   drawSelection,
@@ -22,7 +22,7 @@ import {
 } from '@codemirror/view'
 import { splitStatements } from '@/lib/sql'
 import { MOD } from '@/lib/utils'
-import { useStore, type SchemaState, type Tab } from '@/store'
+import { onStatementWritten, useStore, type SchemaState, type Tab } from '@/store'
 import { activeStatement, appearance, statementRangeAt } from './setup'
 
 const sqlLanguage = new Compartment()
@@ -31,6 +31,34 @@ const sqlLanguage = new Compartment()
 let view: EditorView | null = null
 let viewTabId: string | null = null
 const tabStates = new Map<string, EditorState>()
+
+/** Marks a change that puts in a statement the app wrote, as opposed to one that was typed. */
+const written = Annotation.define<true>()
+
+/**
+ * Shows a statement the app wrote in a tab's editor, such as a table's
+ * statement after its filter changed. This is called at the moment the
+ * statement is written and is the only way text reaches the editor from
+ * outside. Nothing here watches the store for its text: an effect that did
+ * could run late and take back what was typed in between.
+ */
+function showStatement(tabId: string, text: string): void {
+  const replace = (state: EditorState) =>
+    state.update({
+      changes: { from: 0, to: state.doc.length, insert: text },
+      // Not typed, so not something Undo should bring back.
+      annotations: [written.of(true), Transaction.addToHistory.of(false)],
+    })
+  if (view && viewTabId === tabId) {
+    view.dispatch(replace(view.state))
+  } else {
+    // A tab that has not been shown yet has no state, and gets this text when it is.
+    const kept = tabStates.get(tabId)
+    if (kept) tabStates.set(tabId, replace(kept).state)
+  }
+}
+
+onStatementWritten(showStatement)
 
 function run(statements: string[]): void {
   if (viewTabId && statements.length > 0) void useStore.getState().run(viewTabId, statements)
@@ -102,9 +130,9 @@ function createState(doc: string): EditorState {
         indentWithTab,
       ]),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged && viewTabId) {
-          useStore.getState().setTabSql(viewTabId, update.state.doc.toString())
-        }
+        // The store already holds a statement the app wrote, and the tab is still a view of its table.
+        const typed = update.transactions.some((transaction) => transaction.docChanged && !transaction.annotation(written))
+        if (typed && viewTabId) useStore.getState().setTabSql(viewTabId, update.state.doc.toString())
       }),
     ],
   })
