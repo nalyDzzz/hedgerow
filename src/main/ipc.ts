@@ -1,8 +1,9 @@
-import { ipcMain, nativeTheme, type BrowserWindow } from 'electron'
+import { app, ipcMain, nativeTheme, net, type BrowserWindow } from 'electron'
 import type { AppApi, ConnectionInput, IpcEnvelope } from '@shared/api'
 import type { ConnectionParams } from '@shared/driver'
 import type { ConnectionStore } from './connection-store'
 import type { DriverHost } from './driver-host-client'
+import { checkForUpdate } from './updates'
 
 interface Context {
   store: ConnectionStore
@@ -54,6 +55,19 @@ export function registerIpc({ store, host, window }: Context): void {
       tableQuery: (sessionId, table) => host.call('tableQuery', sessionId, table),
       planEdits: (sessionId, request) => host.call('planEdits', sessionId, request),
       applyEdits: (sessionId, statements) => host.call('applyEdits', sessionId, statements),
+    },
+
+    updates: {
+      current: async () => app.getVersion(),
+      check: () =>
+        checkForUpdate({
+          // Electron's own fetch, so the system's proxy settings apply.
+          fetch: (url, init) => net.fetch(url, { ...init, credentials: 'omit', cache: 'no-store' }),
+          current: app.getVersion(),
+          platform: process.platform,
+          // An Intel build on an Apple silicon Mac should be offered the build made for that Mac.
+          arch: app.runningUnderARM64Translation ? 'arm64' : process.arch,
+        }),
     },
 
     window: {

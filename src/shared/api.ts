@@ -55,6 +55,26 @@ export interface SessionInfo {
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
+/** A release that is newer than the app that is running. */
+export interface AvailableUpdate {
+  /** Its version, such as `0.3.0`. */
+  version: string
+  /** The opening lines of its release notes, as plain text. Empty when it has none. */
+  summary: string
+  /** When it came out, as an ISO date. */
+  publishedAt: string | null
+  /** The page that describes it. */
+  releaseUrl: string
+  /** The installer for this system, when the release has one. */
+  download: { name: string; url: string } | null
+}
+
+/** The answer to "is there a newer version?". `current` is the version that is running. */
+export type UpdateCheck =
+  | { status: 'current'; current: string }
+  | { status: 'available'; current: string; update: AvailableUpdate }
+  | { status: 'failed'; current: string; message: string }
+
 export interface AppApi {
   platform: 'win32' | 'darwin' | 'linux' | string
   connections: {
@@ -77,6 +97,12 @@ export interface AppApi {
     planEdits(sessionId: string, request: EditRequest): Promise<string[]>
     /** Runs planned statements in one transaction that commits only if each changes exactly one row. */
     applyEdits(sessionId: string, statements: string[]): Promise<SaveResult>
+  }
+  updates: {
+    /** The version that is running. */
+    current(): Promise<string>
+    /** Asks GitHub for the latest release. Sends nothing else, and never rejects. */
+    check(): Promise<UpdateCheck>
   }
   window: {
     /** Keeps native window chrome in step with the app theme. */
@@ -111,5 +137,7 @@ export const API_CHANNELS = [
   'sessions:tableQuery',
   'sessions:planEdits',
   'sessions:applyEdits',
+  'updates:current',
+  'updates:check',
   'window:setTheme',
 ] as const satisfies readonly ApiChannel[]
