@@ -8,6 +8,8 @@ import type {
   StatementResult,
   TableInfo,
   TableRef,
+  TableView,
+  ViewChange,
 } from '@shared/driver'
 import { plainNumber } from './lib/format'
 import { changesSchema } from './lib/sql'
@@ -68,6 +70,10 @@ export interface ResultEntry {
   saved?: number
   /** How many rows that save added which the rows read back afterwards do not include. */
   outside?: number
+  /** Text looked for in the rows that are loaded. It narrows what the grid shows and is never sent to the database. */
+  find?: string
+  /** How many times a filter or an order put new rows in this entry's place. The grid goes back to the top when it changes. */
+  views?: number
 }
 
 export interface CellRef {
@@ -85,6 +91,15 @@ export interface Tab {
    * query, and from the moment its SQL is edited, because it may then show anything.
    */
   table: TableRef | null
+  /** The filter and the order the table is shown with. Only means something while `table` is set. */
+  view: TableView
+  /**
+   * The column a click on a header ordered the rows by, with the order the
+   * driver wrote for it. It stands for as long as `view.orderBy` is that text.
+   */
+  sorted: SortedBy | null
+  /** Why the last change to the view could not be made, when the driver refused it. */
+  viewProblem: string | null
   sessionId: string | null
   sql: string
   running: boolean
@@ -94,6 +109,15 @@ export interface Tab {
   selected: CellRef | null
   rowLimit: number
 }
+
+export interface SortedBy {
+  /** The column's name in the table. */
+  column: string
+  direction: 'asc' | 'desc'
+  orderBy: string
+}
+
+export const NO_VIEW: TableView = { where: '', orderBy: '' }
 
 export type DialogState =
   | { mode: 'closed' }
@@ -153,6 +177,16 @@ interface State {
   selectCell(id: string, cell: CellRef | null): void
   setActiveResult(id: string, index: number): void
 
+  /**
+   * Shows a table tab's rows with a filter and an order as they were typed. The
+   * database runs the statement again, and the editor shows that statement.
+   */
+  applyView(id: string, view: TableView): Promise<void>
+  /** The same for a change asked for in the grid, which the driver writes: a value picked from a cell, or a column to order by. */
+  changeView(id: string, change: ViewChange): Promise<void>
+  /** Narrows the active result to the loaded rows that contain `text`. Nothing is sent to the database. */
+  setFind(id: string, text: string): void
+
   /** Stages a new value for a cell of the active result. Nothing is sent to the database. */
   stageCell(id: string, cell: CellRef, value: string | null): void
   revertCell(id: string, cell: CellRef): void
@@ -183,6 +217,17 @@ let resultCounter = 0
 let newRowCounter = 0
 /** What to carry on with if the person agrees to discard their changes. */
 let afterDiscard: (() => void) | null = null
+/** Shows a statement the app wrote in a tab's editor. Set by the editor, which the store knows nothing else about. */
+let showInEditor: (tabId: string, sql: string) => void = () => {}
+
+/**
+ * Registers the editor to be told, at that moment, when the app has written a
+ * tab's statement itself. The editor is not driven by the store: what is typed
+ * goes from the editor to the store, and this is the only thing that goes back.
+ */
+export function onStatementWritten(show: (tabId: string, sql: string) => void): void {
+  showInEditor = show
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -360,6 +405,9 @@ export const useStore = create<State>()((set, get) => {
       title: options.title ?? `Query ${++queryCounter}`,
       database,
       table: options.table ?? null,
+      view: NO_VIEW,
+      sorted: null,
+      viewProblem: null,
       sessionId: null,
       sql: options.sql ?? '',
       running: false,
@@ -378,6 +426,67 @@ export const useStore = create<State>()((set, get) => {
       })
     if (options.run && tab.sql) void get().run(tab.id, [tab.sql])
     return tab
+  }
+
+  /**
+   * Runs the statement a view made and puts its rows where the table's rows
+   * were. The result keeps its place in the tab, so the grid keeps its column
+   * widths and stays scrolled to the column that was just sorted or filtered.
+   */
+  const reload = async (id: string, sql: string) => {
+    const tab = tabById(id)
+    const entry = tab?.results.length === 1 ? tab.results[0] : undefined
+    if (!tab || !entry) return get().run(id, [sql])
+
+    const replace = (result: StatementResult) =>
+      patchTab(id, (latest) => ({
+        results: latest.results.map((item) =>
+          item.id === entry.id ? { id: entry.id, sql, result, views: (entry.views ?? 0) + 1 } : item,
+        ),
+        database: result.database,
+      }))
+
+    patchTab(id, { running: true, cancelRequested: false, selected: null })
+    try {
+      const sessionId = await sessionFor(id)
+      if (sessionId) replace(await api.sessions.execute(sessionId, sql, { rowLimit: tab.rowLimit }))
+    } catch (error) {
+      // The call itself failed, so the session is gone; the next run opens a new one.
+      patchTab(id, { sessionId: null })
+      replace({ kind: 'error', message: message(error), durationMs: 0, database: tab.database })
+    } finally {
+      patchTab(id, { running: false, cancelRequested: false })
+    }
+  }
+
+  /**
+   * Gives a table tab another view. The driver writes the statement, the editor
+   * is handed it so that what ran can always be read there, and then it runs.
+   */
+  const openView = async (
+    id: string,
+    make: (sessionId: string, tab: Tab & { table: TableRef }) => Promise<Pick<Tab, 'view' | 'sorted'>>,
+  ) => {
+    const tab = tabById(id)
+    if (!tab?.table || tab.running) return
+    try {
+      const sessionId = await sessionFor(id)
+      if (!sessionId) return
+      const next = await make(sessionId, tab as Tab & { table: TableRef })
+      const sql = await api.sessions.tableQuery(sessionId, tab.table, next.view)
+      const latest = tabById(id)
+      // The SQL was edited while the driver answered. The tab is no longer just this table.
+      if (!latest?.table || latest.running) return
+      const proceed = () => {
+        patchTab(id, { ...next, sql, viewProblem: null })
+        showInEditor(id, sql)
+        void reload(id, sql)
+      }
+      // New rows replace the ones on screen, and unsaved changes to them would go too.
+      if (!askBeforeDiscarding(latest, 'run', proceed)) proceed()
+    } catch (error) {
+      patchTab(id, { viewProblem: message(error) })
+    }
   }
 
   /** Opens a tab on a table's rows. The driver writes the statement: it knows how its database quotes a name. */
@@ -544,7 +653,8 @@ export const useStore = create<State>()((set, get) => {
     },
 
     setTabSql(id, sql) {
-      patchTab(id, { sql, table: null })
+      // Typed SQL may show anything, so the tab stops being a view of one table.
+      patchTab(id, { sql, table: null, view: NO_VIEW, sorted: null, viewProblem: null })
     },
 
     async setTabDatabase(id, database) {
@@ -620,6 +730,32 @@ export const useStore = create<State>()((set, get) => {
 
     setActiveResult(id, index) {
       patchTab(id, { activeResult: index, selected: null })
+    },
+
+    async applyView(id, view) {
+      const typed = { where: view.where.trim(), orderBy: view.orderBy.trim() }
+      await openView(id, async (_sessionId, tab) => ({
+        view: typed,
+        sorted: tab.sorted?.orderBy === typed.orderBy ? tab.sorted : null,
+      }))
+    },
+
+    async changeView(id, change) {
+      await openView(id, async (sessionId, tab) => {
+        const view = await api.sessions.changeView(sessionId, tab.view, change)
+        if (change.kind !== 'sort') return { view, sorted: tab.sorted?.orderBy === view.orderBy ? tab.sorted : null }
+        const column = change.column.source?.column
+        const sorted = change.direction && column ? { column, direction: change.direction, orderBy: view.orderBy } : null
+        return { view, sorted }
+      })
+    },
+
+    setFind(id, text) {
+      patchTab(id, (tab) => ({
+        results: tab.results.map((entry, index) =>
+          index === tab.activeResult ? { ...entry, find: text || undefined } : entry,
+        ),
+      }))
     },
 
     stageCell(id, { row, col }, value) {
