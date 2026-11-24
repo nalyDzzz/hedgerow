@@ -2,7 +2,7 @@
  * How MySQL writes names and values in a statement. Every statement the app
  * generates for MySQL is put together here, so quoting lives in one place.
  */
-import type { CellValue, EditRequest, ResultColumn, TableRef } from '@shared/driver'
+import type { CellChange, CellValue, EditRequest, ResultColumn, TableRef } from '@shared/driver'
 import { DriverError } from '../error'
 
 /** The parts of a session's sql_mode that change how a statement has to be written. */
@@ -76,8 +76,9 @@ export function tableQuery(table: TableRef): string {
 }
 
 /**
- * One statement per changed row. Each names its row by the result's key, so it
- * can only ever reach that row.
+ * One statement per change, in the order given. A change to a row that exists
+ * names it by the result's key, so it can only ever reach that row. A new row
+ * names the columns that were given a value and leaves the rest to the table.
  */
 export function editStatements({ columns, editing, changes }: EditRequest, mode: SqlMode): string[] {
   const table = quoteTable(editing.table)
@@ -88,9 +89,39 @@ export function editStatements({ columns, editing, changes }: EditRequest, mode:
     return quoteIdentifier(source.column)
   }
 
+  /** The columns a change gives a value, each with that value written out. */
+  const assignments = (set: CellChange[]): { name: string; value: string }[] => {
+    const seen = new Set<string>()
+    return set.map(({ column, value }) => {
+      const name = columns[column]?.name ?? `column ${column + 1}`
+      if (!editing.editable.includes(column)) {
+        throw new DriverError(`\`${name}\` cannot be changed.`, 'BAD_CHANGE')
+      }
+      if (value === null && !editing.nullable.includes(column)) {
+        throw new DriverError(`\`${name}\` does not accept NULL.`, 'BAD_CHANGE')
+      }
+      const target = stored(column)
+      if (seen.has(target)) {
+        throw new DriverError(`${target} is given a value twice in the same row.`, 'BAD_CHANGE')
+      }
+      seen.add(target)
+      return { name: target, value: literal(value, columns[column], mode) }
+    })
+  }
+
   const changed = new Set<string>()
 
   return changes.map((change) => {
+    if (change.kind === 'insert') {
+      if (!editing.adding) {
+        throw new DriverError(editing.cannotAdd ?? 'Rows cannot be added to this result.', 'BAD_CHANGE')
+      }
+      // With no column named, every column takes its default.
+      const given = assignments(change.set)
+      const names = given.map(({ name }) => name).join(', ')
+      return `INSERT INTO ${table} (${names}) VALUES (${given.map(({ value }) => value).join(', ')})`
+    }
+
     if (change.key.length !== editing.key.length) {
       throw new DriverError('A change does not say which row it is for.', 'BAD_CHANGE')
     }
@@ -119,23 +150,8 @@ export function editStatements({ columns, editing, changes }: EditRequest, mode:
     if (change.kind === 'delete') return `DELETE FROM ${table} WHERE ${where}`
 
     if (change.set.length === 0) throw new DriverError('A change sets nothing.', 'BAD_CHANGE')
-    const seen = new Set<string>()
-    const set = change.set
-      .map(({ column, value }) => {
-        const name = columns[column]?.name ?? `column ${column + 1}`
-        if (!editing.editable.includes(column)) {
-          throw new DriverError(`\`${name}\` cannot be changed.`, 'BAD_CHANGE')
-        }
-        if (value === null && !editing.nullable.includes(column)) {
-          throw new DriverError(`\`${name}\` does not accept NULL.`, 'BAD_CHANGE')
-        }
-        const target = stored(column)
-        if (seen.has(target)) {
-          throw new DriverError(`${target} is changed twice in the same row.`, 'BAD_CHANGE')
-        }
-        seen.add(target)
-        return `${target} = ${literal(value, columns[column], mode)}`
-      })
+    const set = assignments(change.set)
+      .map(({ name, value }) => `${name} = ${value}`)
       .join(', ')
 
     return `UPDATE ${table} SET ${set} WHERE ${where}`
@@ -144,7 +160,12 @@ export function editStatements({ columns, editing, changes }: EditRequest, mode:
 
 /** True for a statement `editStatements` writes. A save runs nothing else. */
 export function isEditStatement(sql: string): boolean {
-  return /^(?:UPDATE|DELETE FROM) `/.test(sql)
+  return /^(?:UPDATE|DELETE FROM|INSERT INTO) `/.test(sql)
+}
+
+/** True for one that adds a row. */
+export function isInsert(sql: string): boolean {
+  return sql.startsWith('INSERT INTO ')
 }
 
 const LEADING_SPACE_AND_COMMENTS = /^(?:\s+|--[^\n]*(?:\n|$)|#[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/
