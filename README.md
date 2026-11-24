@@ -26,6 +26,7 @@ be added without touching the UI.
 - Edit cells and delete rows in the results grid. Changes are staged, you see the exact SQL before it runs,
   and a save is one transaction that takes effect only if every statement changes exactly one row
 - A color per connection that tints the window, so production never looks like local
+- A notice when a newer version is out, with a button that downloads it
 - Light and dark themes
 
 Values are shown exactly as stored: large integers and decimals keep every digit, and dates are not
@@ -58,6 +59,11 @@ asks for one extra step the first time:
   Chromium's sandbox off.
 
 Each release lists SHA-256 checksums in `SHA256SUMS.txt`.
+
+Hedgerow tells you when a newer version is out and offers its download; it does not install anything by
+itself. To find out, it asks GitHub which release is the latest. That request names the app and nothing
+else: no version, no system, nothing about you or your databases. You can turn the check off where it is
+shown, by clicking the version number in the bottom right corner.
 
 ## Run it from source
 
@@ -119,8 +125,8 @@ Planned, roughly in this order:
   ([#4](https://github.com/nalyDzzz/hedgerow/issues/4)) drivers
 - Export results to CSV and JSON ([#5](https://github.com/nalyDzzz/hedgerow/issues/5))
 - Connections through an SSH tunnel ([#6](https://github.com/nalyDzzz/hedgerow/issues/6))
-- Signed installers ([#7](https://github.com/nalyDzzz/hedgerow/issues/7)) and automatic updates
-  ([#8](https://github.com/nalyDzzz/hedgerow/issues/8))
+- Signed installers ([#7](https://github.com/nalyDzzz/hedgerow/issues/7)) and installing an update without
+  leaving the app ([#8](https://github.com/nalyDzzz/hedgerow/issues/8))
 - Optional AI help that uses your own Claude or Codex account
   ([#9](https://github.com/nalyDzzz/hedgerow/issues/9))
 
