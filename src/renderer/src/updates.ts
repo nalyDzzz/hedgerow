@@ -35,13 +35,21 @@ interface UpdatesState {
   setDialogOpen(open: boolean): void
 }
 
-let timer: ReturnType<typeof setInterval> | undefined
+let firstCheck: ReturnType<typeof setTimeout> | undefined
+let laterChecks: ReturnType<typeof setInterval> | undefined
 
 export const useUpdates = create<UpdatesState>()((set, get) => {
-  /** Looks now and then, for as long as the person wants that. */
-  const schedule = () => {
-    clearInterval(timer)
-    if (get().automatic) timer = setInterval(() => void get().check(), CHECK_EVERY)
+  /**
+   * Makes the app look by itself, or stop, to match the setting. Everything
+   * that was waiting to run is dropped first, so switching the setting off
+   * also calls off a check that was about to be made.
+   */
+  const schedule = (startingUp: boolean) => {
+    clearTimeout(firstCheck)
+    clearInterval(laterChecks)
+    if (!get().automatic) return
+    if (startingUp) firstCheck = setTimeout(() => void get().check(), FIRST_CHECK_AFTER)
+    laterChecks = setInterval(() => void get().check(), CHECK_EVERY)
   }
 
   return {
@@ -56,8 +64,7 @@ export const useUpdates = create<UpdatesState>()((set, get) => {
 
     start() {
       void api.updates.current().then((version) => set({ version }))
-      if (get().automatic) setTimeout(() => void get().check(), FIRST_CHECK_AFTER)
-      schedule()
+      schedule(true)
     },
 
     async check() {
@@ -82,7 +89,7 @@ export const useUpdates = create<UpdatesState>()((set, get) => {
       if (automatic) localStorage.removeItem(AUTOMATIC_KEY)
       else localStorage.setItem(AUTOMATIC_KEY, 'off')
       set({ automatic })
-      schedule()
+      schedule(false)
     },
 
     skip(version) {
