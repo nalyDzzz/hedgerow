@@ -22,12 +22,16 @@ interface FindBarProps {
  * here. The bar says so for as long as a search is on.
  */
 export function FindBar({ find, matches, loaded, truncated, onFind, children }: FindBarProps) {
+  // Kept short enough to be read whole beside the box, and said in full on hover in case it is not.
+  const scope = truncated
+    ? `Rows beyond the first ${formatCount(loaded)} are in the database and are not searched.`
+    : 'Searched here, in the rows that were loaded. The database is not asked again.'
   return (
     <div className="flex h-8 shrink-0 items-center gap-2.5 border-b border-border bg-card pl-2 pr-1.5 text-[12px]">
       <Search className={cn('size-3.5 shrink-0', find ? 'text-foreground' : 'text-faint')} />
       <div
         className={cn(
-          'flex h-6 w-[280px] shrink-0 items-center rounded-sm border bg-background focus-within:border-ring',
+          'flex h-6 w-[240px] shrink-0 items-center rounded-sm border bg-background focus-within:border-ring',
           find ? 'border-border-strong' : 'border-border',
         )}
       >
@@ -62,10 +66,11 @@ export function FindBar({ find, matches, loaded, truncated, onFind, children }: 
           <span className="shrink-0 font-medium">
             {formatCount(matches)} of {plural(loaded, 'loaded row')}
           </span>
-          <span className={cn('truncate', truncated ? 'font-medium text-foreground' : 'text-muted-foreground')}>
-            {truncated
-              ? `Only the first ${formatCount(loaded)} rows were loaded. The rest are in the database and are not searched.`
-              : 'Searched here, in the rows that were loaded. The database is not asked again.'}
+          <span
+            className={cn('truncate', truncated ? 'font-medium text-foreground' : 'text-muted-foreground')}
+            title={scope}
+          >
+            {scope}
           </span>
         </span>
       ) : (
