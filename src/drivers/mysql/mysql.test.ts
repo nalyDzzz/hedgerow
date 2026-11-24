@@ -569,12 +569,16 @@ describe.skipIf(!port)('mysql driver', () => {
         // A column that is left out but accepts NULL, or has a default, is no obstacle.
         expect((await select('SELECT order_id, line_no FROM order_lines')).editing?.adding).toBeDefined()
 
+        // Named in the order the table has them, not the order of their names.
         await run(
-          `CREATE TABLE wide (id INT PRIMARY KEY AUTO_INCREMENT, a INT NOT NULL, b INT NOT NULL, c INT NOT NULL,
+          `CREATE TABLE wide (id INT PRIMARY KEY AUTO_INCREMENT, zed INT NOT NULL, b INT NOT NULL, a INT NOT NULL,
              d INT NOT NULL, e INT NOT NULL, note VARCHAR(10))`,
         )
+        expect(await reason('SELECT id, note, zed, b FROM wide')).toBe(
+          'To add rows here, add `a`, `d` and `e` to the query. A new row of `wide` needs a value for each of them.',
+        )
         expect(await reason('SELECT id, note FROM wide')).toBe(
-          'To add rows here, add `a`, `b`, `c` and 2 other columns to the query. ' +
+          'To add rows here, add `zed`, `b`, `a` and 2 other columns to the query. ' +
             'A new row of `wide` needs a value for each of them.',
         )
         // A binary value cannot be typed, so a table that needs one cannot be added to.

@@ -306,6 +306,32 @@
     color: inherit;
   }
 
+  /*
+   * A row that is not in the database yet. Its values are all unsaved, so the
+   * row is marked as a whole instead of cell by cell. A cell that has not been
+   * given a value says who will decide it, upright and in lower case so it
+   * cannot be taken for a NULL.
+   */
+  [data-new] > .grid-cell {
+    font-weight: 600;
+    background: color-mix(in oklab, var(--foreground) 5%, transparent);
+  }
+  .grid-row[data-new] .grid-gutter {
+    color: var(--foreground);
+    font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--foreground);
+  }
+  .cell-unset {
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 400;
+  }
+  .cell-unset[data-required] {
+    color: var(--muted-foreground);
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+  }
+
   /* The box that takes a cell's place while it is edited. */
   .cell-editor {
     position: absolute;

@@ -8,10 +8,15 @@ import { MOD, cn, shortcut } from '@/lib/utils'
 
 interface ValueInspectorProps {
   column: ResultColumn
-  /** What the cell shows: the unsaved value if it has one, otherwise what is stored. */
-  value: CellValue
+  /**
+   * What the cell shows: the unsaved value if it has one, otherwise what is stored.
+   * Undefined for a cell of a new row that has not been given a value.
+   */
+  value: CellValue | undefined
   /** The cell has a change that is not saved yet. */
   changed: boolean
+  /** For a cell of a new row: the table has no default for this column, so it is expected to be given a value. */
+  required?: boolean
   /** The value can be changed from here. */
   editable: boolean
   nullable: boolean
@@ -34,6 +39,7 @@ export function ValueInspector({
   column,
   value,
   changed,
+  required,
   editable,
   nullable,
   startEditing,
@@ -46,7 +52,7 @@ export function ValueInspector({
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(startEditing && editable)
 
-  const text = value === null || isBinary(value) ? null : String(value)
+  const text = value == null || isBinary(value) ? null : String(value)
   const isJson = useMemo(
     () => text !== null && (column.kind === 'json' || looksLikeJson(text)),
     [text, column.kind],
@@ -54,7 +60,7 @@ export function ValueInspector({
   const formatted = useMemo(() => (isJson && text !== null ? formatJson(text) : null), [isJson, text])
 
   const copy = () => {
-    void navigator.clipboard.writeText(isJson && !raw && formatted ? formatted : cellText(value))
+    void navigator.clipboard.writeText(isJson && !raw && formatted ? formatted : cellText(value ?? ''))
     setCopied(true)
     setTimeout(() => setCopied(false), 1200)
   }
@@ -64,6 +70,7 @@ export function ValueInspector({
       <ValueEditor
         column={column}
         initial={text}
+        holds={value === undefined ? 'not set' : 'NULL'}
         nullable={nullable}
         onCancel={() => {
           setEditing(false)
@@ -129,7 +136,18 @@ export function ValueInspector({
       )}
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {value === null ? (
+        {value === undefined ? (
+          <p className="p-3 text-[12.5px] text-muted-foreground">
+            {required ? (
+              <>This value is not set, and the table has no default for it. The row needs one to be saved.</>
+            ) : (
+              <>
+                This value is not set. When the row is saved, the table decides what it holds: a default, a generated
+                number, or <span className="cell-null font-mono">NULL</span>.
+              </>
+            )}
+          </p>
+        ) : value === null ? (
           <p className="p-3 text-[12.5px] text-muted-foreground">
             This value is <span className="cell-null font-mono">NULL</span>.
           </p>
@@ -164,8 +182,10 @@ export function ValueInspector({
 
 interface ValueEditorProps {
   column: ResultColumn
-  /** The text to start from. Null when the cell holds NULL. */
+  /** The text to start from. Null when the cell holds no text. */
   initial: string | null
+  /** What it holds then, shown until something is typed. */
+  holds: string
   nullable: boolean
   onCancel(): void
   /** Called with the new value, or with nothing when the text was left as it was. */
@@ -176,9 +196,10 @@ interface ValueEditorProps {
  * Edits the text exactly as it will be stored. Nothing is reformatted unless
  * Format is pressed, so JSON kept in a text column keeps its own spacing.
  */
-function ValueEditor({ column, initial, nullable, onCancel, onDone }: ValueEditorProps) {
+function ValueEditor({ column, initial, holds, nullable, onCancel, onDone }: ValueEditorProps) {
   const [draft, setDraft] = useState(initial ?? '')
-  // An untouched box changes nothing, so opening a NULL and leaving does not make it an empty string.
+  // An untouched box changes nothing, so opening a NULL and leaving does not make it an empty string,
+  // and a cell of a new row that was only looked at stays not set.
   const touched = useRef(false)
   const invalidJson = useMemo(() => {
     if (column.kind !== 'json' || draft.trim() === '') return false
@@ -224,7 +245,7 @@ function ValueEditor({ column, initial, nullable, onCancel, onDone }: ValueEdito
         value={draft}
         spellCheck={false}
         aria-label={`New value for ${column.name}`}
-        placeholder={initial === null && !touched.current ? 'NULL' : 'empty text'}
+        placeholder={initial === null && !touched.current ? holds : 'empty text'}
         className="selectable min-h-0 flex-1 resize-none bg-background p-3 font-mono text-[12px] leading-relaxed text-foreground outline-none placeholder:italic placeholder:text-faint"
         onChange={(event) => {
           touched.current = true
