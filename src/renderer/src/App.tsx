@@ -6,8 +6,10 @@ import { ResizeHandle } from '@/components/ResizeHandle'
 import { Sidebar } from '@/components/Sidebar'
 import { StatusBar } from '@/components/StatusBar'
 import { TitleBar } from '@/components/TitleBar'
+import { UpdateDialog } from '@/components/UpdateDialog'
 import { Workspace } from '@/components/Workspace'
 import { useActiveConnection, useActiveTab, useStore } from '@/store'
+import { useUpdates } from '@/updates'
 
 const SIDEBAR_WIDTH_KEY = 'sidebarWidth'
 
@@ -18,6 +20,7 @@ export function App() {
 
   useEffect(() => {
     void useStore.getState().loadConnections()
+    useUpdates.getState().start()
   }, [])
 
   // Tint the whole window, dialogs and menus included, with the active connection's color.
@@ -74,6 +77,7 @@ export function App() {
       <StatusBar />
       <ConnectionDialog />
       <DiscardChangesDialog />
+      <UpdateDialog />
     </div>
   )
 }

@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { Monitor, Moon, Sun } from 'lucide-react'
+import { ArrowDownToLine, Monitor, Moon, Sun } from 'lucide-react'
 import type { ThemeMode } from '@shared/api'
 import { APP_NAME } from '@shared/app'
 import { Button } from '@/components/ui/button'
 import { getThemeMode, setThemeMode } from '@/lib/theme'
 import { useActiveConnection, useActiveTab } from '@/store'
+import { useAnnouncedUpdate, useUpdates } from '@/updates'
 
 const THEMES: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
   { mode: 'system', label: 'Match system', icon: Monitor },
@@ -51,6 +52,27 @@ function ThemeToggle() {
   )
 }
 
+/**
+ * Says that a newer version is out. It stays quiet and neutral: the one strong
+ * color in the window belongs to the connection.
+ */
+function UpdateNotice() {
+  const update = useAnnouncedUpdate()
+  if (!update) return null
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="mr-1.5 text-muted-foreground"
+      title={`${APP_NAME} ${update.version} is available. Click to see what is new and download it.`}
+      onClick={() => useUpdates.getState().setDialogOpen(true)}
+    >
+      <ArrowDownToLine />
+      {update.version} available
+    </Button>
+  )
+}
+
 export function TitleBar() {
   const connection = useActiveConnection()
   const tab = useActiveTab()
@@ -83,6 +105,7 @@ export function TitleBar() {
       <div className="flex-1" />
 
       <div className="no-drag flex items-center pr-1.5">
+        <UpdateNotice />
         <ThemeToggle />
       </div>
     </header>

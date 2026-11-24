@@ -14,6 +14,16 @@ const REPOSITORY = 'nalyDzzz/hedgerow'
 export const LATEST_RELEASE_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`
 const RELEASES_URL = `https://github.com/${REPOSITORY}/releases/`
 
+/**
+ * Everything the request says about who is asking: the app's name, and no version of it.
+ * The language is fixed so that the one set on the computer is not sent in its place.
+ */
+export const REQUEST_HEADERS = {
+  Accept: 'application/vnd.github+json',
+  'Accept-Language': 'en',
+  'User-Agent': 'Hedgerow',
+}
+
 /** The parts of an HTTP answer this needs. */
 interface Answer {
   ok: boolean
@@ -105,7 +115,7 @@ export async function checkForUpdate(context: CheckContext): Promise<UpdateCheck
   const { current } = context
   try {
     const answer = await context.fetch(LATEST_RELEASE_URL, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Hedgerow' },
+      headers: REQUEST_HEADERS,
       signal: AbortSignal.timeout(15_000),
     })
     if (!answer.ok) {

@@ -1,6 +1,14 @@
 /** The update check, against made-up answers from GitHub. Nothing here touches the network. */
 import { describe, expect, it } from 'vitest'
-import { checkForUpdate, installerSuffix, isNewer, LATEST_RELEASE_URL, summarize, type CheckContext } from './updates'
+import {
+  checkForUpdate,
+  installerSuffix,
+  isNewer,
+  LATEST_RELEASE_URL,
+  REQUEST_HEADERS,
+  summarize,
+  type CheckContext,
+} from './updates'
 
 const DOWNLOADS = 'https://github.com/nalyDzzz/hedgerow/releases/download/v0.3.0'
 
@@ -93,9 +101,14 @@ describe('checking for a new version', () => {
         return context.fetch(url, init)
       },
     })
-    expect(asked).toEqual([
-      { url: LATEST_RELEASE_URL, headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Hedgerow' } },
-    ])
+    expect(asked).toEqual([{ url: LATEST_RELEASE_URL, headers: REQUEST_HEADERS }])
+    expect(LATEST_RELEASE_URL).toBe('https://api.github.com/repos/nalyDzzz/hedgerow/releases/latest')
+    // The app's name only: no version, no system, no language of the person's own.
+    expect(REQUEST_HEADERS).toEqual({
+      Accept: 'application/vnd.github+json',
+      'Accept-Language': 'en',
+      'User-Agent': 'Hedgerow',
+    })
   })
 
   it('describes a newer release, with the installer for this system', async () => {
