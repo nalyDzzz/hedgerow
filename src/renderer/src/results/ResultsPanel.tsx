@@ -388,7 +388,9 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
                         ? selectedChange
                         : rowsResult.rows[selected.row][selected.col]
                   }
-                  changed={selectedChanged}
+                  // A value typed into a new row is as unsaved as an edit to an existing one.
+                  changed={selectedNew ? selectedNew.cells[selected.col] !== undefined : selectedChanged}
+                  inNewRow={selectedNew !== undefined}
                   required={selectedNew !== undefined && Boolean(editing?.adding?.required.includes(selected.col))}
                   editable={
                     Boolean(editing?.editable.includes(selected.col)) &&

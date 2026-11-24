@@ -34,6 +34,21 @@ export function cellText(value: CellValue): string {
   return String(value)
 }
 
+/**
+ * A number's digits with everything taken off that does not change its value,
+ * so 007, +7 and 7.0 all read 7. Done on the text: a BIGINT or DECIMAL has more
+ * digits than a JavaScript number keeps, and two keys that differ only in the
+ * last one must not come out the same. Null for anything not written plainly.
+ */
+export function plainNumber(value: CellValue): string | null {
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(String(value).trim())
+  if (!match || (match[2] === '' && !match[3])) return null
+  const whole = match[2].replace(/^0+/, '')
+  const fraction = (match[3] ?? '').replace(/0+$/, '')
+  if (whole === '' && fraction === '') return '0'
+  return `${match[1] === '-' ? '-' : ''}${whole || '0'}${fraction ? `.${fraction}` : ''}`
+}
+
 /** True for text that is a JSON object or array. Scalars are left alone on purpose. */
 export function looksLikeJson(text: string): boolean {
   const first = text.trimStart()[0]
