@@ -1,7 +1,16 @@
 /** How statements are written. These need no server; `mysql.test.ts` runs the same statements against one. */
 import { describe, expect, it } from 'vitest'
 import type { EditRequest, ResultColumn } from '@shared/driver'
-import { editStatements, isEditStatement, isQuery, literal, quoteIdentifier, quoteString, tableQuery } from './sql'
+import {
+  editStatements,
+  isEditStatement,
+  isInsert,
+  isQuery,
+  literal,
+  quoteIdentifier,
+  quoteString,
+  tableQuery,
+} from './sql'
 
 const usual = { backslashEscapes: true }
 const literalBackslash = { backslashEscapes: false }
@@ -89,7 +98,14 @@ describe('binary values', () => {
 describe('statements for staged changes', () => {
   const request = (changes: EditRequest['changes'], over: Partial<EditRequest['editing']> = {}): EditRequest => ({
     columns: [id, title, price],
-    editing: { table: { database: 'shop', table: 'items' }, key: [0], editable: [0, 1, 2], nullable: [1], ...over },
+    editing: {
+      table: { database: 'shop', table: 'items' },
+      key: [0],
+      editable: [0, 1, 2],
+      nullable: [1],
+      adding: { required: [2], auto: [0] },
+      ...over,
+    },
     changes,
   })
 
@@ -150,6 +166,71 @@ describe('statements for staged changes', () => {
     expect(() => editStatements(twice, usual)).toThrow(/same row of `items`/)
   })
 
+  it('writes an INSERT that names only the columns that were given a value', () => {
+    const statements = editStatements(
+      request([
+        {
+          kind: 'insert',
+          set: [
+            { column: 1, value: "it's" },
+            { column: 2, value: '9.50' },
+          ],
+        },
+        { kind: 'insert', set: [{ column: 0, value: '9007199254740993' }, { column: 1, value: null }] },
+      ]),
+      usual,
+    )
+    expect(statements).toEqual([
+      "INSERT INTO `shop`.`items` (`title`, `price`) VALUES ('it''s', 9.50)",
+      'INSERT INTO `shop`.`items` (`id`, `title`) VALUES (9007199254740993, NULL)',
+    ])
+  })
+
+  it('writes a row that was given no values at all, which takes every default', () => {
+    expect(editStatements(request([{ kind: 'insert', set: [] }]), usual)).toEqual([
+      'INSERT INTO `shop`.`items` () VALUES ()',
+    ])
+  })
+
+  it('keeps the order the changes were given in', () => {
+    const statements = editStatements(
+      request([
+        { kind: 'delete', key: [7] },
+        { kind: 'insert', set: [{ column: 1, value: 'new' }] },
+      ]),
+      usual,
+    )
+    expect(statements.map((statement) => statement.split(' ')[0])).toEqual(['DELETE', 'INSERT'])
+  })
+
+  it('refuses a new row the result does not allow', () => {
+    const add = (column: number, value: string | null): EditRequest['changes'] => [
+      { kind: 'insert', set: [{ column, value }] },
+    ]
+    expect(() => editStatements(request(add(2, '1'), { editable: [1] }), usual)).toThrow(/`price` cannot be changed/)
+    expect(() => editStatements(request(add(2, null)), usual)).toThrow(/`price` does not accept NULL/)
+    expect(() => editStatements(request(add(2, 'cheap')), usual)).toThrow(/is not a number/)
+    expect(() =>
+      editStatements(
+        request(
+          [
+            {
+              kind: 'insert',
+              set: [
+                { column: 1, value: 'a' },
+                { column: 1, value: 'b' },
+              ],
+            },
+          ],
+        ),
+        usual,
+      ),
+    ).toThrow(/`title` is given a value twice/)
+    // A result that cannot add rows says why, and the driver holds to it.
+    const closed = { adding: undefined, cannotAdd: 'To add rows here, add `sku` to the query.' }
+    expect(() => editStatements(request(add(1, 'x'), closed), usual)).toThrow(/add `sku` to the query/)
+  })
+
   it('refuses a change the result does not allow', () => {
     const change = (column: number, value: string | null): EditRequest['changes'] => [
       { kind: 'update', key: [1], set: [{ column, value }] },
@@ -164,19 +245,31 @@ describe('telling a planned change from other statements', () => {
   it('knows the statements it writes', () => {
     const request: EditRequest = {
       columns: [id, title],
-      editing: { table: { database: 'shop', table: 'items' }, key: [0], editable: [1], nullable: [] },
+      editing: {
+        table: { database: 'shop', table: 'items' },
+        key: [0],
+        editable: [1],
+        nullable: [],
+        adding: { required: [], auto: [] },
+      },
       changes: [
         { kind: 'update', key: [1], set: [{ column: 1, value: 'x' }] },
         { kind: 'delete', key: [2] },
+        { kind: 'insert', set: [{ column: 1, value: 'x' }] },
+        { kind: 'insert', set: [] },
       ],
     }
-    expect(editStatements(request, usual).every(isEditStatement)).toBe(true)
+    const statements = editStatements(request, usual)
+    expect(statements.every(isEditStatement)).toBe(true)
+    expect(statements.map(isInsert)).toEqual([false, false, true, true])
   })
 
   it('rejects statements that could do more than change a row', () => {
     expect(isEditStatement('ALTER TABLE items ADD COLUMN x INT')).toBe(false)
     expect(isEditStatement('SELECT * FROM items')).toBe(false)
     expect(isEditStatement('DROP TABLE items')).toBe(false)
+    expect(isEditStatement('INSERT IGNORE INTO `items` () VALUES ()')).toBe(false)
+    expect(isEditStatement('REPLACE INTO `items` () VALUES ()')).toBe(false)
   })
 })
 

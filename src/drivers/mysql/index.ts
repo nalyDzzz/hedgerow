@@ -11,6 +11,7 @@ import type {
   EditRequest,
   ExecuteOptions,
   ResultColumn,
+  ResultEditing,
   RowsResult,
   SaveResult,
   StatementResult,
@@ -18,7 +19,7 @@ import type {
   TableRef,
 } from '@shared/driver'
 import { DriverError } from '../error'
-import { editStatements, isEditStatement, isQuery, quoteIdentifier, tableQuery, type SqlMode } from './sql'
+import { editStatements, isEditStatement, isInsert, isQuery, quoteIdentifier, tableQuery, type SqlMode } from './sql'
 
 /**
  * Upper bound on rows held for one statement, whatever LIMIT it asks for.
@@ -109,6 +110,10 @@ interface TableShape {
   columns: Set<string>
   /** Columns the server computes, which cannot be assigned. */
   generated: Set<string>
+  /** Columns the server numbers by itself when a new row leaves them out. */
+  auto: Set<string>
+  /** Columns with no default that do not accept NULL, as the table spells them. */
+  required: string[]
   /** Unique indexes. A part with no column is an expression. */
   keys: { name: string; parts: { column: string | null; nullable: boolean }[] }[]
 }
@@ -271,6 +276,15 @@ function runCommand(connection: Connection, sql: string): Promise<OkHeader> {
 function rowsReached(header: OkHeader): number {
   const matched = /^Rows matched: (\d+)/.exec(header.info ?? '')
   return matched ? Number(matched[1]) : (header.affectedRows ?? 0)
+}
+
+/**
+ * The number the server generated for the row a statement added, if it did.
+ * One too large to be exact as a JavaScript number is left out: a wrong id is worse than none.
+ */
+function generatedId(header: OkHeader): string | null {
+  const id = typeof header.insertId === 'string' ? Number(header.insertId) : header.insertId
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? String(id) : null
 }
 
 /** True for a binary value that was only loaded in part, so that its whole value is not known. */
@@ -449,6 +463,7 @@ class MysqlSession implements DriverSession {
     let inTransaction = false
     /** The statement being run, while one is. */
     let at: number | undefined
+    const insertIds: (string | null)[] = []
     try {
       this.assertOpen()
       this.running = true
@@ -483,19 +498,23 @@ class MysqlSession implements DriverSession {
           throw new DriverError(`The server raised a warning: ${said || 'no details given.'}`, 'WARNING')
         }
         const reached = rowsReached(header)
+        const adds = isInsert(sql)
         if (reached !== 1) {
           throw new DriverError(
-            reached === 0
-              ? 'The statement matched no row. The row may have been changed or deleted since it was loaded.'
-              : `The statement matched ${reached} rows instead of one.`,
+            adds
+              ? `The statement added ${reached} rows instead of one.`
+              : reached === 0
+                ? 'The statement matched no row. The row may have been changed or deleted since it was loaded.'
+                : `The statement matched ${reached} rows instead of one.`,
             'ROW_COUNT',
           )
         }
+        insertIds.push(adds ? generatedId(header) : null)
       }
       at = undefined
       await runCommand(this.connection, 'COMMIT')
       inTransaction = false
-      return { ok: true, durationMs: elapsed() }
+      return { ok: true, durationMs: elapsed(), insertIds }
     } catch (error) {
       if (inTransaction) await queryRows(this.connection, 'ROLLBACK').catch(() => {})
       const failure = error as MysqlError
@@ -629,9 +648,9 @@ class MysqlSession implements DriverSession {
             'Rows can be edited when each appears once.',
         }
       }
+      const nameOf = (index: number) => columns[index].source!.column.toLowerCase()
       const editable = stored.filter(
-        (index) =>
-          columns[index].kind !== 'binary' && !shape.generated.has(columns[index].source!.column.toLowerCase()),
+        (index) => columns[index].kind !== 'binary' && !shape.generated.has(nameOf(index)),
       )
       return {
         editing: {
@@ -639,6 +658,7 @@ class MysqlSession implements DriverSession {
           key: keyColumns,
           editable,
           nullable: editable.filter((index) => !(flagsOf(fields[index]) & FLAG_NOT_NULL)),
+          ...this.describeAdding(table, shape, columns, stored, editable),
         },
       }
     }
@@ -665,6 +685,54 @@ class MysqlSession implements DriverSession {
     }
   }
 
+  /**
+   * Decides whether a row can be added through a result. It can as long as the
+   * result can give a value to every column that has to be given one. Whether a
+   * value is in fact given is left to the server at save time: a trigger may
+   * fill a column in, and only the server knows.
+   */
+  private describeAdding(
+    table: TableRef,
+    shape: TableShape,
+    columns: ResultColumn[],
+    /** The columns of the result that are stored in the table. */
+    stored: number[],
+    editable: number[],
+  ): Pick<ResultEditing, 'adding' | 'cannotAdd'> {
+    const nameOf = (index: number) => columns[index].source!.column.toLowerCase()
+    const shown = new Set(stored.map(nameOf))
+    const settable = new Set(editable.map(nameOf))
+
+    const hidden = shape.required.filter((name) => !shown.has(name.toLowerCase()))
+    if (hidden.length > 0) {
+      const names =
+        hidden.length > 4
+          ? `${hidden.slice(0, 3).map((name) => `\`${name}\``).join(', ')} and ${hidden.length - 3} other columns`
+          : nameList(hidden)
+      return {
+        cannotAdd:
+          `To add rows here, add ${names} to the query. ` +
+          `A new row of \`${table.table}\` needs a value for ${hidden.length > 1 ? 'each of them' : 'it'}.`,
+      }
+    }
+    const fixed = shape.required.filter((name) => !settable.has(name.toLowerCase()))
+    if (fixed.length > 0) {
+      return {
+        cannotAdd:
+          `A new row of \`${table.table}\` needs a value for ${nameList(fixed)}, ` +
+          'and a binary value cannot be typed here.',
+      }
+    }
+
+    const required = new Set(shape.required.map((name) => name.toLowerCase()))
+    return {
+      adding: {
+        required: editable.filter((index) => required.has(nameOf(index))),
+        auto: editable.filter((index) => shape.auto.has(nameOf(index))),
+      },
+    }
+  }
+
   /** One round trip for both lists. A row with no index name describes a column. */
   private async tableShape(table: TableRef): Promise<TableShape> {
     const rows = await queryRows(
@@ -673,20 +741,26 @@ class MysqlSession implements DriverSession {
           FROM information_schema.STATISTICS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND NON_UNIQUE = 0)
        UNION ALL
-       (SELECT NULL, ORDINAL_POSITION, COLUMN_NAME, IF(GENERATION_EXPRESSION <> '', 'GENERATED', '')
+       (SELECT NULL, ORDINAL_POSITION, COLUMN_NAME,
+               CASE WHEN GENERATION_EXPRESSION <> '' THEN 'GENERATED'
+                    WHEN EXTRA LIKE '%auto_increment%' THEN 'AUTO'
+                    WHEN IS_NULLABLE = 'NO' AND COLUMN_DEFAULT IS NULL THEN 'REQUIRED'
+                    ELSE '' END
           FROM information_schema.COLUMNS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?)
        LIMIT 100000`,
       [table.database, table.table, table.database, table.table],
     )
 
-    const shape: TableShape = { columns: new Set(), generated: new Set(), keys: [] }
+    const shape: TableShape = { columns: new Set(), generated: new Set(), auto: new Set(), required: [], keys: [] }
     const parts = new Map<string, { position: number; column: string | null; nullable: boolean }[]>()
     for (const [index, position, column, note] of rows) {
       if (index === null) {
         const name = String(column).toLowerCase()
         shape.columns.add(name)
         if (note === 'GENERATED') shape.generated.add(name)
+        else if (note === 'AUTO') shape.auto.add(name)
+        else if (note === 'REQUIRED') shape.required.push(String(column))
       } else {
         const list = parts.get(String(index)) ?? []
         list.push({

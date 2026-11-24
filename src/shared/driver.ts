@@ -67,6 +67,21 @@ export interface ResultColumn {
 }
 
 /**
+ * What the UI needs to know to start a new row. Indexes point into the result's
+ * columns, and all of them are editable columns.
+ */
+export interface RowAdding {
+  /**
+   * Columns the table gives no default and that do not accept NULL, so a new
+   * row is expected to give them a value. This is a hint to show, not a rule to
+   * enforce: a trigger may fill one in, and only the server knows.
+   */
+  required: number[]
+  /** Columns the database numbers by itself when a new row leaves them out. */
+  auto: number[]
+}
+
+/**
  * How the rows of a result can be changed. A driver offers this only when it can
  * find each row again: the rows all come from one table, and the result includes
  * a primary key or unique key of that table. Indexes point into the result's columns.
@@ -79,6 +94,10 @@ export interface ResultEditing {
   editable: number[]
   /** Of those, the ones that accept NULL. */
   nullable: number[]
+  /** Present when rows can be added to the table from this result. */
+  adding?: RowAdding
+  /** When they cannot: why, in a sentence fit to show a person as-is. */
+  cannotAdd?: string
 }
 
 export interface RowsResult {
@@ -132,11 +151,13 @@ export interface CellChange {
 /**
  * One staged change to a row of an editable result. `key` holds the row's
  * values for `ResultEditing.key`, in that order and exactly as the result
- * returned them.
+ * returned them. A new row has no key yet: an insert names only the columns
+ * that were given a value, and every other column is left to its default.
  */
 export type RowChange =
   | { kind: 'update'; key: CellValue[]; set: CellChange[] }
   | { kind: 'delete'; key: CellValue[] }
+  | { kind: 'insert'; set: CellChange[] }
 
 export interface EditRequest {
   /** The columns of the result being edited. */
@@ -148,7 +169,15 @@ export interface EditRequest {
 
 /** The outcome of saving changes. A save that is not `ok` changed nothing. */
 export type SaveResult =
-  | { ok: true; durationMs: number }
+  | {
+      ok: true
+      durationMs: number
+      /**
+       * One entry per statement, in order: the number the database generated for
+       * the row a statement added, or null when it added none or generated none.
+       */
+      insertIds?: (string | null)[]
+    }
   | {
       ok: false
       message: string
@@ -188,15 +217,15 @@ export interface DriverSession {
   /** The statement that reads the rows of a table, with names quoted the way this database quotes them. */
   tableQuery(table: TableRef): Promise<string>
   /**
-   * Turns staged changes into the statements that make them, one per changed
-   * row, with every name and value quoted for this session. Runs nothing.
+   * Turns staged changes into the statements that make them, one per change
+   * and in the same order, with every name and value quoted for this session. Runs nothing.
    * Rejects when a change cannot be written, such as text for a number column.
    */
   planEdits(request: EditRequest): Promise<string[]>
   /**
    * Runs statements from `planEdits` in one transaction. Commits only if every
-   * statement changes exactly one row and none raises a warning; otherwise
-   * everything is rolled back. Never rejects for SQL errors.
+   * statement changes or adds exactly one row and none raises a warning;
+   * otherwise everything is rolled back. Never rejects for SQL errors.
    */
   applyEdits(statements: string[]): Promise<SaveResult>
   close(): Promise<void>

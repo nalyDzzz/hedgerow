@@ -252,6 +252,8 @@ describe.skipIf(!port)('mysql driver', () => {
         // Not the binary column, whose value is only loaded in part, nor the generated one.
         editable: [0, 1, 2, 3, 4, 5, 6, 7],
         nullable: [2, 3, 5, 6, 7],
+        // `email` has no default and refuses NULL. `balance` refuses NULL too, but has a default.
+        adding: { required: [1], auto: [0] },
       })
     })
 
@@ -543,6 +545,232 @@ describe.skipIf(!port)('mysql driver', () => {
       // Had the save started its own transaction, this change would now be committed.
       await run('ROLLBACK')
       expect(await bio(1)).toBe('before')
+    })
+
+    describe('adding rows', () => {
+      const add = (set: [column: number, value: string | null][]): RowChange => ({
+        kind: 'insert',
+        set: set.map(([column, value]) => ({ column, value })),
+      })
+
+      it('lets a row be added only where every column that needs a value can be given one', async () => {
+        const reason = async (sql: string) => {
+          const result = await select(sql)
+          expect(result.editing, sql).toBeDefined()
+          expect(result.editing!.adding, sql).toBeUndefined()
+          return result.editing!.cannotAdd
+        }
+        // `email` is not on screen, so no new row could ever be saved.
+        expect(await reason('SELECT id, nick FROM people')).toBe(
+          'To add rows here, add `email` to the query. A new row of `people` needs a value for it.',
+        )
+        // An expression over the column is not the column.
+        expect(await reason('SELECT id, UPPER(email) AS email FROM people')).toMatch(/add `email` to the query/)
+        // A column that is left out but accepts NULL, or has a default, is no obstacle.
+        expect((await select('SELECT order_id, line_no FROM order_lines')).editing?.adding).toBeDefined()
+
+        await run(
+          `CREATE TABLE wide (id INT PRIMARY KEY AUTO_INCREMENT, a INT NOT NULL, b INT NOT NULL, c INT NOT NULL,
+             d INT NOT NULL, e INT NOT NULL, note VARCHAR(10))`,
+        )
+        expect(await reason('SELECT id, note FROM wide')).toBe(
+          'To add rows here, add `a`, `b`, `c` and 2 other columns to the query. ' +
+            'A new row of `wide` needs a value for each of them.',
+        )
+        // A binary value cannot be typed, so a table that needs one cannot be added to.
+        expect(await reason('SELECT * FROM tokens')).toBe(
+          'A new row of `tokens` needs a value for `id`, and a binary value cannot be typed here.',
+        )
+      })
+
+      it('marks the columns a new row is expected to fill, and the ones the database numbers', async () => {
+        // The key here is `email`, the only key the result holds whole.
+        const byEmail = await select('SELECT email, balance, bio FROM people')
+        expect(byEmail.editing).toMatchObject({ key: [0], adding: { required: [0], auto: [] } })
+
+        // No default and NOT NULL, but part of a key the database does not number: still for the person to give.
+        const lines = await select('SELECT * FROM order_lines')
+        expect(lines.editing).toMatchObject({ adding: { required: [0, 1], auto: [] } })
+      })
+
+      it('plans an INSERT that names only what was given, and runs nothing', async () => {
+        const result = await select('SELECT * FROM people ORDER BY id')
+        const count = (await select('SELECT COUNT(*) FROM people')).rows[0][0]
+        const statements = await session.planEdits(
+          request(result, [
+            add([
+              [1, "new'o@example.com"],
+              [2, null],
+              [3, ''],
+              [5, '9007199254740995'],
+            ]),
+            add([]),
+          ]),
+        )
+        expect(statements).toEqual([
+          `INSERT INTO ${TABLE} (\`email\`, \`nick\`, \`bio\`, \`big\`) VALUES ('new''o@example.com', NULL, '', 9007199254740995)`,
+          `INSERT INTO ${TABLE} () VALUES ()`,
+        ])
+        expect((await select('SELECT COUNT(*) FROM people')).rows[0][0]).toBe(count)
+      })
+
+      it('stores a new row exactly as typed, leaves the rest to the table, and says which id it got', async () => {
+        const typed = {
+          email: "o'neil@example.com",
+          bio: 'C:\\temp\\new\n\t"quoted" and \'single\' \u00e9\u{1F994} 100%_',
+          big: '-9007199254740993',
+          prefs: '{"path": "C:\\\\x", "n": 12345678901234567890}',
+          seen: '2026-11-24 23:59:58',
+        }
+        const result = await select('SELECT * FROM people ORDER BY id')
+        const statements = await session.planEdits(
+          request(result, [
+            add([
+              [1, typed.email],
+              [3, typed.bio],
+              [5, typed.big],
+              [6, typed.prefs],
+              [7, typed.seen],
+            ]),
+          ]),
+        )
+        const outcome = await session.applyEdits(statements)
+        expect(outcome).toMatchObject({ ok: true })
+        const [id] = (outcome.ok && outcome.insertIds) || []
+        expect(id).toMatch(/^\d+$/)
+
+        const [stored] = (
+          await select(`SELECT email, nick, bio, balance, big, prefs, seen, initials FROM people WHERE id = ${id}`)
+        ).rows
+        expect(stored[0]).toBe(typed.email)
+        // Not given, so the table decided: NULL where it allows it, its default where it has one.
+        expect(stored[1]).toBeNull()
+        expect(stored[2]).toBe(typed.bio)
+        expect(stored[3]).toBe('0.0000')
+        expect(stored[4]).toBe(typed.big)
+        expect(stored[5]).toContain('12345678901234567890')
+        expect(stored[6]).toBe(typed.seen)
+        expect(stored[7]).toBe("o'")
+      })
+
+      it('adds rows in the same transaction as other changes, after them', async () => {
+        await run("INSERT INTO people (id, email) VALUES (60, 'swap@example.com'), (61, 'stay@example.com')")
+        const result = await select('SELECT * FROM people WHERE id >= 60 ORDER BY id')
+        // The new row takes the address the deleted one had, which only works in this order.
+        const statements = await session.planEdits(
+          request(result, [
+            { kind: 'delete', key: [60] },
+            { kind: 'update', key: [61], set: [{ column: 3, value: 'kept' }] },
+            add([[1, 'swap@example.com']]),
+          ]),
+        )
+        const outcome = await session.applyEdits(statements)
+        expect(outcome).toMatchObject({ ok: true })
+        expect(outcome.ok && outcome.insertIds).toEqual([null, null, expect.stringMatching(/^\d+$/)])
+        const after = await select("SELECT id, bio FROM people WHERE email IN ('swap@example.com', 'stay@example.com') ORDER BY id")
+        expect(after.rows).toEqual([
+          [61, 'kept'],
+          [Number((outcome.ok && outcome.insertIds?.[2]) || 0), null],
+        ])
+      })
+
+      it('says no id when the row was given its own key', async () => {
+        const lines = await select('SELECT * FROM order_lines')
+        const statements = await session.planEdits(
+          request(lines, [
+            add([
+              [0, '8'],
+              [1, '1'],
+              [2, 'typed key'],
+            ]),
+          ]),
+        )
+        expect(statements).toEqual([
+          `INSERT INTO \`${DB}\`.\`order_lines\` (\`order_id\`, \`line_no\`, \`note\`) VALUES (8, 1, 'typed key')`,
+        ])
+        expect(await session.applyEdits(statements)).toMatchObject({ ok: true, insertIds: [null] })
+        expect((await select('SELECT note FROM order_lines WHERE order_id = 8')).rows).toEqual([['typed key']])
+      })
+
+      it('saves nothing when a new row is refused, whatever came before it', async () => {
+        await run("UPDATE people SET bio = 'before' WHERE id = 1")
+        const result = await select('SELECT * FROM people ORDER BY id')
+        const count = (await select('SELECT COUNT(*) FROM people')).rows[0][0]
+
+        // The address is taken.
+        const duplicate = await session.applyEdits(
+          await session.planEdits(
+            request(result, [
+              { kind: 'update', key: [1], set: [{ column: 3, value: 'after' }] },
+              add([[1, 'fresh@example.com']]),
+              add([[1, 'ada@example.com']]),
+            ]),
+          ),
+        )
+        expect(duplicate).toMatchObject({ ok: false, statement: 2, code: 'ER_DUP_ENTRY' })
+
+        // `email` has no default, and nothing gave it a value.
+        const missing = await session.applyEdits(
+          await session.planEdits(
+            request(result, [{ kind: 'update', key: [1], set: [{ column: 3, value: 'after' }] }, add([[2, 'nobody']])]),
+          ),
+        )
+        expect(missing).toMatchObject({ ok: false, statement: 1, code: 'ER_NO_DEFAULT_FOR_FIELD' })
+
+        expect(await bio(1)).toBe('before')
+        expect((await select('SELECT COUNT(*) FROM people')).rows[0][0]).toBe(count)
+      })
+
+      it('saves nothing when a lenient server would make up a value for a new row', async () => {
+        const result = await select('SELECT * FROM people ORDER BY id')
+        const count = (await select('SELECT COUNT(*) FROM people')).rows[0][0]
+        const statements = await session.planEdits(request(result, [add([[2, 'lenient']])]))
+        await run("SET SESSION sql_mode = ''")
+        try {
+          // Without strict mode the server stores an empty address and only warns.
+          const outcome = await session.applyEdits(statements)
+          expect(outcome).toMatchObject({ ok: false, statement: 0, code: 'WARNING' })
+          expect(outcome.ok === false && outcome.message).toMatch(/'email' doesn't have a default value/)
+        } finally {
+          await run('SET SESSION sql_mode = DEFAULT')
+        }
+        expect((await select('SELECT COUNT(*) FROM people')).rows[0][0]).toBe(count)
+      })
+
+      it('lets a trigger give the value a new row left out', async () => {
+        await run('CREATE TABLE stamped (id INT PRIMARY KEY AUTO_INCREMENT, code VARCHAR(20) NOT NULL, note VARCHAR(20))')
+        await run("CREATE TRIGGER stamped_code BEFORE INSERT ON stamped FOR EACH ROW SET NEW.code = CONCAT('S-', COALESCE(NEW.note, ''))")
+        const result = await select('SELECT * FROM stamped')
+        // `code` is marked as expected, but leaving it out is the server's call, not ours.
+        expect(result.editing).toMatchObject({ adding: { required: [1], auto: [0] } })
+        const outcome = await session.applyEdits(await session.planEdits(request(result, [add([[2, 'x']])])))
+        expect(outcome).toMatchObject({ ok: true })
+        expect((await select('SELECT code, note FROM stamped')).rows).toEqual([['S-x', 'x']])
+      })
+
+      it('counts an INSERT that adds more or fewer rows than one as a failure', async () => {
+        const count = (await select('SELECT COUNT(*) FROM order_lines')).rows[0][0]
+        const two = await session.applyEdits([
+          `INSERT INTO \`${DB}\`.\`order_lines\` (\`order_id\`, \`line_no\`) VALUES (9, 1), (9, 2)`,
+        ])
+        expect(two).toMatchObject({ ok: false, statement: 0, code: 'ROW_COUNT' })
+        expect(two.ok === false && two.message).toBe('The statement added 2 rows instead of one.')
+        const none = await session.applyEdits([
+          `INSERT INTO \`${DB}\`.\`order_lines\` (\`order_id\`, \`line_no\`) SELECT 9, 1 FROM DUAL WHERE FALSE`,
+        ])
+        expect(none).toMatchObject({ ok: false, statement: 0, code: 'ROW_COUNT' })
+        expect((await select('SELECT COUNT(*) FROM order_lines')).rows[0][0]).toBe(count)
+      })
+
+      it('offers adding to a table that has no rows yet', async () => {
+        await run('CREATE TABLE fresh (id INT PRIMARY KEY AUTO_INCREMENT, label VARCHAR(10) NOT NULL DEFAULT \'new\')')
+        const empty = await select('SELECT * FROM fresh')
+        expect(empty.rows).toEqual([])
+        expect(empty.editing).toMatchObject({ key: [0], adding: { required: [], auto: [0] } })
+        const outcome = await session.applyEdits(await session.planEdits(request(empty, [add([])])))
+        expect(outcome).toMatchObject({ ok: true, insertIds: ['1'] })
+        expect((await select('SELECT * FROM fresh')).rows).toEqual([[1, 'new']])
+      })
     })
 
     it('stays usable for ordinary statements after a save', async () => {
