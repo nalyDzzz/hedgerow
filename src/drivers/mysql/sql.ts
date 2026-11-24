@@ -128,16 +128,59 @@ export function columnTest(column: ResultColumn, value: CellValue, exclude: bool
   return column.nullable ? `(${name} <> ${written} OR ${name} IS NULL)` : `${name} <> ${written}`
 }
 
+/**
+ * Where a comment that runs to the end of the line starts in a piece of SQL
+ * typed on one line, or -1 when it has none. A `--` or `#` inside a string, a
+ * quoted name or a closed comment is not one, and neither is `--` with no space
+ * after it, which MySQL reads as two minus signs.
+ */
+export function lineCommentStart(text: string, mode: SqlMode): number {
+  /** What has been opened and not closed yet: a quote character, or a block comment. */
+  let inside: string | null = null
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at]
+    if (inside === '*/') {
+      if (text.startsWith('*/', at)) {
+        inside = null
+        at += 1
+      }
+    } else if (inside) {
+      // A backslash keeps the next character from ending a string, unless the session takes it literally.
+      if (char === '\\' && inside !== '`' && mode.backslashEscapes) at += 1
+      else if (char === inside) {
+        // Written twice, the quote is part of what it quotes.
+        if (text[at + 1] === inside) at += 1
+        else inside = null
+      }
+    } else if (char === "'" || char === '"' || char === '`') {
+      inside = char
+    } else if (text.startsWith('/*', at)) {
+      inside = '*/'
+      at += 1
+    } else if (char === '#') {
+      return at
+    } else if (text.startsWith('--', at) && (at + 2 === text.length || /\s/.test(text[at + 2]))) {
+      return at
+    }
+  }
+  return -1
+}
+
 /** Adds a condition to the ones a view already has, so that all of them must hold. */
-export function andCondition(where: string, condition: string): string {
+export function andCondition(where: string, condition: string, mode: SqlMode): string {
   const existing = fragment(where)
   if (!existing) return condition
+  // A comment at the end runs to the end of the line. Anything put after it, a closing
+  // bracket included, would be swallowed, so the condition goes in before it.
+  const comment = lineCommentStart(existing, mode)
+  const said = fragment(comment < 0 ? existing : existing.slice(0, comment))
+  const trailing = comment < 0 ? '' : ` ${existing.slice(comment)}`
+  if (!said) return `${condition}${trailing}`
   // Asking for the same thing twice changes nothing.
-  if (existing.split(/\s+AND\s+/i).includes(condition)) return existing
+  if (said.split(/\s+AND\s+/i).includes(condition)) return existing
   // AND binds tighter than OR, so what is there keeps its meaning only inside brackets.
-  const kept = /\bx?or\b|\|\|/i.test(existing) ? `(${existing})` : existing
-  // A comment runs to the end of the line and would swallow a condition put after it.
-  return /--|#|\/\*/.test(existing) ? `${condition} AND ${kept}` : `${kept} AND ${condition}`
+  const kept = /\bx?or\b|\|\|/i.test(said) ? `(${said})` : said
+  return `${kept} AND ${condition}${trailing}`
 }
 
 /** The view after one change asked for in the grid. */
@@ -148,7 +191,7 @@ export function changedView(view: TableView, change: ViewChange, mode: SqlMode):
     return { where: fragment(view.where), orderBy }
   }
   return {
-    where: andCondition(view.where, columnTest(change.column, change.value, change.exclude, mode)),
+    where: andCondition(view.where, columnTest(change.column, change.value, change.exclude, mode), mode),
     orderBy: fragment(view.orderBy),
   }
 }

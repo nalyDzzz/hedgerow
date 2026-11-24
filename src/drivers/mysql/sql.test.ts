@@ -9,6 +9,7 @@ import {
   isEditStatement,
   isInsert,
   isQuery,
+  lineCommentStart,
   literal,
   quoteIdentifier,
   quoteString,
@@ -319,33 +320,78 @@ describe('a condition written from a cell', () => {
 })
 
 describe('adding a condition to a filter', () => {
+  const and = (where: string, condition: string) => andCondition(where, condition, usual)
+
   it('stands alone when there is nothing yet', () => {
-    expect(andCondition('', '`a` = 1')).toBe('`a` = 1')
-    expect(andCondition('  ; ', '`a` = 1')).toBe('`a` = 1')
+    expect(and('', '`a` = 1')).toBe('`a` = 1')
+    expect(and('  ; ', '`a` = 1')).toBe('`a` = 1')
   })
 
   it('goes after what is there', () => {
-    expect(andCondition("title LIKE 'a%'", '`a` = 1')).toBe("title LIKE 'a%' AND `a` = 1")
-    expect(andCondition('a BETWEEN 1 AND 2', '`b` = 3')).toBe('a BETWEEN 1 AND 2 AND `b` = 3')
+    expect(and("title LIKE 'a%'", '`a` = 1')).toBe("title LIKE 'a%' AND `a` = 1")
+    expect(and('a BETWEEN 1 AND 2', '`b` = 3')).toBe('a BETWEEN 1 AND 2 AND `b` = 3')
   })
 
   it('brackets what is there when it holds an OR, which would otherwise change meaning', () => {
-    expect(andCondition('a = 1 OR b = 2', '`c` = 3')).toBe('(a = 1 OR b = 2) AND `c` = 3')
-    expect(andCondition('a = 1 or b = 2', '`c` = 3')).toBe('(a = 1 or b = 2) AND `c` = 3')
-    expect(andCondition('a = 1 || b = 2', '`c` = 3')).toBe('(a = 1 || b = 2) AND `c` = 3')
-    expect(andCondition('a XOR b', '`c` = 3')).toBe('(a XOR b) AND `c` = 3')
+    expect(and('a = 1 OR b = 2', '`c` = 3')).toBe('(a = 1 OR b = 2) AND `c` = 3')
+    expect(and('a = 1 or b = 2', '`c` = 3')).toBe('(a = 1 or b = 2) AND `c` = 3')
+    expect(and('a = 1 || b = 2', '`c` = 3')).toBe('(a = 1 || b = 2) AND `c` = 3')
+    expect(and('a XOR b', '`c` = 3')).toBe('(a XOR b) AND `c` = 3')
     // Not an OR, only a name that contains one.
-    expect(andCondition('floor = 1', '`c` = 3')).toBe('floor = 1 AND `c` = 3')
+    expect(and('floor = 1', '`c` = 3')).toBe('floor = 1 AND `c` = 3')
   })
 
-  it('goes before a comment, which would swallow it', () => {
-    expect(andCondition('a = 1 -- for now', '`c` = 3')).toBe('`c` = 3 AND a = 1 -- for now')
-    expect(andCondition('a = 1 /* hm */', '`c` = 3')).toBe('`c` = 3 AND a = 1 /* hm */')
+  it('goes in before a comment at the end, which would swallow it', () => {
+    expect(and('a = 1 -- for now', '`c` = 3')).toBe('a = 1 AND `c` = 3 -- for now')
+    expect(and('a = 1 # for now', '`c` = 3')).toBe('a = 1 AND `c` = 3 # for now')
+    expect(and('a = 1; -- for now', '`c` = 3')).toBe('a = 1 AND `c` = 3 -- for now')
+    expect(and('-- everything, for now', '`c` = 3')).toBe('`c` = 3 -- everything, for now')
+  })
+
+  it('closes its bracket before that comment too', () => {
+    // After the comment, the bracket would be part of it, and the statement would not parse.
+    expect(and('a = 1 OR b = 2 -- note', '`c` = 3')).toBe('(a = 1 OR b = 2) AND `c` = 3 -- note')
+    expect(and('a = 1 OR b = 2 #note', '`c` = 3')).toBe('(a = 1 OR b = 2) AND `c` = 3 #note')
+  })
+
+  it('leaves a comment that ends by itself where it is', () => {
+    expect(and('a = 1 /* hm */', '`c` = 3')).toBe('a = 1 /* hm */ AND `c` = 3')
+    expect(and('a = 1 /* -- not the end */ OR b = 2', '`c` = 3')).toBe('(a = 1 /* -- not the end */ OR b = 2) AND `c` = 3')
   })
 
   it('does not say the same thing twice', () => {
-    expect(andCondition('`a` = 1 AND `b` = 2', '`b` = 2')).toBe('`a` = 1 AND `b` = 2')
-    expect(andCondition('`a` = 1', '`a` = 1')).toBe('`a` = 1')
+    expect(and('`a` = 1 AND `b` = 2', '`b` = 2')).toBe('`a` = 1 AND `b` = 2')
+    expect(and('`a` = 1', '`a` = 1')).toBe('`a` = 1')
+    expect(and('`a` = 1 -- note', '`a` = 1')).toBe('`a` = 1 -- note')
+  })
+})
+
+describe('finding a comment that runs to the end of the line', () => {
+  it('finds one where MySQL would', () => {
+    expect(lineCommentStart('a = 1 -- note', usual)).toBe(6)
+    expect(lineCommentStart('a = 1 --', usual)).toBe(6)
+    expect(lineCommentStart('a = 1 #note', usual)).toBe(6)
+    expect(lineCommentStart('a = 1', usual)).toBe(-1)
+  })
+
+  it('is not fooled by the same characters inside text, a name or a closed comment', () => {
+    expect(lineCommentStart("note = 'a -- b' AND c = '#fff'", usual)).toBe(-1)
+    expect(lineCommentStart('note = "a -- b"', usual)).toBe(-1)
+    expect(lineCommentStart('`a#b` = 1 AND `c -- d` = 2', usual)).toBe(-1)
+    expect(lineCommentStart('a = 1 /* -- # */ AND b = 2', usual)).toBe(-1)
+    expect(lineCommentStart("note = 'it''s -- fine'", usual)).toBe(-1)
+    // And finds the real one after them.
+    expect(lineCommentStart("note = 'a -- b' -- real", usual)).toBe(16)
+  })
+
+  it('reads two minus signs with no space after them as arithmetic', () => {
+    expect(lineCommentStart('a = 1 --2', usual)).toBe(-1)
+  })
+
+  it('reads a backslash the way the session does', () => {
+    // With escapes, the quote after the backslash is text and the string goes on. Without, it ends there.
+    expect(lineCommentStart("note = 'it\\'s -- fine'", usual)).toBe(-1)
+    expect(lineCommentStart("note = 'a\\' -- note", literalBackslash)).toBe(12)
   })
 })
 
