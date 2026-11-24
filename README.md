@@ -26,6 +26,10 @@ be added without touching the UI.
 - Edit cells, add rows and delete rows in the results grid. Changes are staged, you see the exact SQL before
   it runs, and a save is one transaction that takes effect only if every statement changes exactly one row.
   A new row sets only the cells you fill in, and leaves the rest to the table's defaults
+- Filter and sort a table without rewriting the query: type a condition and an order above the grid, click a
+  column header, or right-click a cell to keep or leave out its value. The database does the filtering, and
+  the editor shows the statement that ran
+- Search the rows a query returned. This only looks through the rows that were loaded, and says so
 - A color per connection that tints the window, so production never looks like local
 - A notice when a newer version is out, with a button that downloads it
 - Light and dark themes
@@ -118,7 +122,6 @@ in `package.json` differ. Read the draft, edit its notes, and publish it from th
 
 Planned, roughly in this order:
 
-- Filter and sort results from the results screen ([#12](https://github.com/nalyDzzz/hedgerow/issues/12))
 - Change a table's structure from the app ([#11](https://github.com/nalyDzzz/hedgerow/issues/11))
 - Query history ([#2](https://github.com/nalyDzzz/hedgerow/issues/2))
 - PostgreSQL ([#3](https://github.com/nalyDzzz/hedgerow/issues/3)) and SQLite
