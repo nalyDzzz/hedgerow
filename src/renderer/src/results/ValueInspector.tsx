@@ -13,8 +13,10 @@ interface ValueInspectorProps {
    * Undefined for a cell of a new row that has not been given a value.
    */
   value: CellValue | undefined
-  /** The cell has a change that is not saved yet. */
+  /** The cell has a change that is not saved yet. In a new row, that is any value it was given. */
   changed: boolean
+  /** The cell belongs to a row that is not in the database yet. */
+  inNewRow?: boolean
   /** For a cell of a new row: the table has no default for this column, so it is expected to be given a value. */
   required?: boolean
   /** The value can be changed from here. */
@@ -39,6 +41,7 @@ export function ValueInspector({
   column,
   value,
   changed,
+  inNewRow,
   required,
   editable,
   nullable,
@@ -126,11 +129,17 @@ export function ValueInspector({
 
       {changed && (
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-muted pl-3 pr-1.5 text-[11.5px]">
-          <span className="font-medium">Changed, not saved yet</span>
+          <span className="font-medium">{inNewRow ? 'In a new row, not saved yet' : 'Changed, not saved yet'}</span>
           <div className="flex-1" />
-          <Button variant="ghost" size="sm" className="h-5 px-1.5" onClick={onRevert}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 px-1.5"
+            title={inNewRow ? 'Take this value away again and leave the cell to the table' : undefined}
+            onClick={onRevert}
+          >
             <Undo2 />
-            Undo
+            {inNewRow ? 'Do not set' : 'Undo'}
           </Button>
         </div>
       )}

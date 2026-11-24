@@ -9,6 +9,7 @@ import type {
   TableInfo,
   TableRef,
 } from '@shared/driver'
+import { plainNumber } from './lib/format'
 import { changesSchema } from './lib/sql'
 
 const api = window.api
@@ -248,15 +249,20 @@ function rowsOutside(before: RowsResult, added: NewRow[], ids: (string | null)[]
   const kinds = key.map((column) => before.columns[column].kind)
   if (!kinds.every((kind) => kind === 'number' || kind === 'text')) return 0
   // 007 and 7 are the same number, and a CHAR column drops the spaces typed after a value.
-  const comparable = (values: (CellValue | string)[]) =>
-    JSON.stringify(values.map((value, at) => (kinds[at] === 'number' ? String(Number(value)) : String(value).trimEnd())))
+  // Null when a number is written in a way that cannot be compared digit by digit, such as 1e3.
+  const comparable = (values: CellValue[]) => {
+    const parts = values.map((value, at) => (kinds[at] === 'number' ? plainNumber(value) : String(value).trimEnd()))
+    return parts.includes(null) ? null : JSON.stringify(parts)
+  }
 
   const present = new Set(after.rows.map((row) => comparable(key.map((column) => row[column]))))
   const auto = editing.adding?.auto ?? []
   let outside = 0
   added.forEach((row, index) => {
     const values = key.map((column) => row.cells[column] ?? (auto.includes(column) ? ids[index] : null))
-    if (values.every((value) => value != null) && !present.has(comparable(values as string[]))) outside += 1
+    if (values.includes(null)) return
+    const wanted = comparable(values)
+    if (wanted !== null && !present.has(wanted)) outside += 1
   })
   return outside
 }
