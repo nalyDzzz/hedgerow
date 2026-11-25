@@ -170,6 +170,25 @@ describe.skipIf(!port)('mysql driver', () => {
     expect(session.database).toBe(DB)
   })
 
+  it('says whether a statement leaves a transaction open', async () => {
+    const other = await mysqlDriver.connect({ ...params, database: DB })
+    const open = async (sql: string) => (await other.execute(sql, options)).transaction
+
+    expect(await open('SELECT n FROM many LIMIT 1')).toBe(false)
+    expect(await open('START TRANSACTION')).toBe(true)
+    expect(await open('SELECT n FROM many LIMIT 1')).toBe(true)
+    // A statement the server refuses does not end it.
+    expect(await open('SELEC nonsense')).toBe(true)
+    expect(await open('COMMIT')).toBe(false)
+    expect(await open('SELECT n FROM many LIMIT 1')).toBe(false)
+
+    // With autocommit off, reading a table opens one without being asked to.
+    expect(await open('SET autocommit = 0')).toBe(false)
+    expect(await open('SELECT n FROM many LIMIT 1')).toBe(true)
+    expect(await open('ROLLBACK')).toBe(false)
+    await other.close()
+  })
+
   it('interrupts a running statement and stays usable', async () => {
     const started = Date.now()
     const pending = session.execute('SELECT SLEEP(15)', options)

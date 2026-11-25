@@ -56,6 +56,8 @@ const FLAG_PART_OF_KEY = 16384
 const ER_QUERY_INTERRUPTED = 1317
 /** Bit of the status the server sends with every answer: a transaction is open. */
 const STATUS_IN_TRANSACTION = 1
+/** Another bit of it: each statement is committed by itself, unless a transaction was started. */
+const STATUS_AUTOCOMMIT = 2
 /**
  * Storage engines that keep no transactions, in lower case. What is written to
  * one of their tables stays written, so a save could not be all or nothing.
@@ -399,6 +401,10 @@ class MysqlSession implements DriverSession {
   private readonly kills = new Set<Promise<void>>()
   /** True once a kill was sent, until a statement that does nothing has been run to take it. */
   private strayKill = false
+  /** The status the server last sent with an answer, which says whether a transaction is open. */
+  private status: number | null = null
+  /** True when that status came with the answer to the statement that is running or just ran. */
+  private statusIsCurrent = false
   private closed = false
 
   constructor(
@@ -486,8 +492,9 @@ class MysqlSession implements DriverSession {
       await this.settle()
 
       if (/^\s*use\s/i.test(sql)) await this.refreshDatabase()
+      const transaction = await this.transactionOpen(outcome.kind === 'rows' && isQuery(sql))
 
-      if (outcome.kind === 'ok') return { ...outcome, durationMs, database: this.currentDatabase }
+      if (outcome.kind === 'ok') return { ...outcome, durationMs, database: this.currentDatabase, transaction }
 
       if (!outcome.truncated && outcome.rows.length === options.rowLimit + 1) {
         outcome.rows.pop()
@@ -499,18 +506,23 @@ class MysqlSession implements DriverSession {
       const editing = await this.describeEditing(sql, fields, rows.columns, rows.rows).catch(() => ({
         readOnly: 'It could not be worked out whether these rows can be edited.',
       }))
-      return { ...rows, ...editing, durationMs, database: this.currentDatabase }
+      return { ...rows, ...editing, durationMs, database: this.currentDatabase, transaction }
     } catch (error) {
       this.running = false
       const failure = error as MysqlError
       if (failure.fatal) this.closed = true
+      const durationMs = elapsed()
+      // A failure can end a transaction, as a deadlock does, or leave one open that a procedure
+      // started. A stop may still be on its way, and must not land on the question either.
+      if (!this.closed) await this.settle().catch(() => {})
       return {
         kind: 'error',
         message: failure.sqlMessage || failure.message || 'The statement failed.',
         code: failure.code,
         ...(this.closed ? { connectionLost: true } : {}),
-        durationMs: elapsed(),
+        durationMs,
         database: this.currentDatabase,
+        transaction: await this.transactionOpen(isQuery(sql)),
       }
     }
   }
@@ -550,6 +562,28 @@ class MysqlSession implements DriverSession {
     this.running = true
     this.started += 1
     this.cancelRequested = false
+    this.statusIsCurrent = false
+  }
+
+  /**
+   * Whether the session has a transaction open now. The server says so with
+   * every answer except a set of rows, so after rows it is asked, with a
+   * statement that does nothing. Not when it could not have changed: outside a
+   * transaction, with each statement committed by itself, a query that only
+   * reads cannot open one.
+   */
+  private async transactionOpen(onlyRead: boolean): Promise<boolean> {
+    if (this.closed) return false
+    const idle =
+      this.status !== null && (this.status & STATUS_AUTOCOMMIT) !== 0 && (this.status & STATUS_IN_TRANSACTION) === 0
+    if (!this.statusIsCurrent && !(onlyRead && idle)) {
+      try {
+        this.status = (await runCommand(this.connection, 'DO 0')).serverStatus ?? this.status
+      } catch {
+        // What was last known stands.
+      }
+    }
+    return this.status !== null && (this.status & STATUS_IN_TRANSACTION) !== 0
   }
 
   /**
@@ -1040,8 +1074,12 @@ class MysqlSession implements DriverSession {
           return
         }
         // A non-row result is the server's OK packet for a statement without a result set.
-        const header = row as { affectedRows?: number; insertId?: number | string; info?: string }
+        const header = row as OkHeader
         setIndex += 1
+        if (typeof header.serverStatus === 'number') {
+          this.status = header.serverStatus
+          this.statusIsCurrent = true
+        }
         if (ok === null) {
           ok = {
             affectedRows: header.affectedRows ?? 0,
