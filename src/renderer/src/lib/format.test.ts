@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { plainNumber } from './format'
+import { copyText, plainNumber } from './format'
 
 describe('comparing numbers by their digits', () => {
   it('reads the same number the same way however it was written', () => {
@@ -20,5 +20,21 @@ describe('comparing numbers by their digits', () => {
 
   it('answers nothing for what it cannot compare digit by digit', () => {
     for (const other of ['1e3', '0x1F', '', '.', 'seven', '1,000', null]) expect(plainNumber(other)).toBeNull()
+  })
+})
+
+describe('what goes to the clipboard', () => {
+  it('is the value as it is shown', () => {
+    expect(copyText(null)).toBe('NULL')
+    expect(copyText(42)).toBe('42')
+    expect(copyText('text')).toBe('text')
+    expect(copyText({ type: 'binary', bytes: 4, preview: 'deadbeef' })).toBe('0xdeadbeef')
+  })
+
+  it('says so when only the start of a binary value is loaded', () => {
+    const start = 'ab'.repeat(32)
+    expect(copyText({ type: 'binary', bytes: 4096, preview: start })).toBe(
+      `0x${start}… (the first 32 of 4,096 bytes)`,
+    )
   })
 })

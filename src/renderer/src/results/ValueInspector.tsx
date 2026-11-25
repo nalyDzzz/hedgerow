@@ -3,7 +3,7 @@ import { Check, Copy, Pencil, Undo2, X } from 'lucide-react'
 import type { CellValue, ResultColumn } from '@shared/driver'
 import { Button } from '@/components/ui/button'
 import { CodeView } from '@/editor/CodeView'
-import { cellText, formatBytes, formatCount, formatJson, isBinary, looksLikeJson } from '@/lib/format'
+import { copyText, formatBytes, formatCount, formatJson, isBinary, looksLikeJson } from '@/lib/format'
 import { MOD, cn, shortcut } from '@/lib/utils'
 
 interface ValueInspectorProps {
@@ -63,7 +63,7 @@ export function ValueInspector({
   const formatted = useMemo(() => (isJson && text !== null ? formatJson(text) : null), [isJson, text])
 
   const copy = () => {
-    void navigator.clipboard.writeText(isJson && !raw && formatted ? formatted : cellText(value ?? ''))
+    void navigator.clipboard.writeText(isJson && !raw && formatted ? formatted : copyText(value ?? ''))
     setCopied(true)
     setTimeout(() => setCopied(false), 1200)
   }

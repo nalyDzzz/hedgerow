@@ -27,11 +27,21 @@ export function isBinary(value: CellValue): value is BinaryCell {
   return typeof value === 'object' && value !== null
 }
 
-/** The value as plain text, for copying. */
+/** The value as plain text, as far as it is loaded. */
 export function cellText(value: CellValue): string {
   if (value === null) return 'NULL'
   if (isBinary(value)) return `0x${value.preview}`
   return String(value)
+}
+
+/**
+ * The value as it goes to the clipboard. Only the start of a long binary value
+ * is loaded, and what is copied says so: pasted somewhere as it stood before,
+ * the start alone read as the whole value.
+ */
+export function copyText(value: CellValue): string {
+  if (!isBinary(value) || value.preview.length === value.bytes * 2) return cellText(value)
+  return `${cellText(value)}… (the first ${value.preview.length / 2} of ${formatCount(value.bytes)} bytes)`
 }
 
 /**
