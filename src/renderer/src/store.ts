@@ -208,8 +208,12 @@ interface State {
   discardChanges(id: string): void
   /** Asks the driver for the statements that would save the active result's changes. Runs nothing. */
   planSave(id: string): Promise<string[]>
-  /** Runs those statements in one transaction, then reloads the rows to show what was stored. */
-  save(id: string, statements: string[]): Promise<SaveResult>
+  /**
+   * Runs those statements in one transaction, then reloads the rows to show what
+   * was stored. `entryId` names the result they were planned for, and they are
+   * run for no other.
+   */
+  save(id: string, entryId: number, statements: string[]): Promise<SaveResult>
   /** Answers the question in `discardPrompt`. */
   answerDiscard(discard: boolean): void
 
@@ -939,11 +943,18 @@ export const useStore = create<State>()((set, get) => {
       }
     },
 
-    async save(id, statements) {
+    async save(id, entryId, statements) {
       const tab = tabById(id)
       const entry = tab?.results[tab.activeResult]
       if (!tab || !entry || tab.running) {
         return { ok: false, message: 'Wait for the running statement to finish, then save again.', durationMs: 0 }
+      }
+      if (entry.id !== entryId || countChanges(entry.staged) === 0) {
+        return {
+          ok: false,
+          message: 'These statements were not planned for the changes that are on screen now. Close this and save again.',
+          durationMs: 0,
+        }
       }
       const replaceEntry = (patch: Partial<ResultEntry>) =>
         patchTab(id, (latest) => ({
