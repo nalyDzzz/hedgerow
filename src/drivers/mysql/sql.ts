@@ -392,6 +392,25 @@ export function givesNameAway(sql: string, name: string): boolean {
   })
 }
 
+/**
+ * True for a SELECT that writes its rows to a file on the server instead of
+ * returning them. The limit on rows returned applies to such a statement too,
+ * and would cut the file short without anything saying so.
+ */
+export function writesFile(sql: string): boolean {
+  // Read both ways a session may read a string. Wrongly taken for one, a statement only loses its row limit.
+  return [true, false].some((backslashEscapes) => {
+    const list = tokenize(sql, { backslashEscapes })
+    return list.some(
+      (token, at) =>
+        token.kind === 'word' &&
+        token.text.toUpperCase() === 'INTO' &&
+        list[at + 1]?.kind === 'word' &&
+        /^(OUTFILE|DUMPFILE)$/i.test(list[at + 1].text),
+    )
+  })
+}
+
 /** True for a statement `editStatements` writes. A save runs nothing else. */
 export function isEditStatement(sql: string): boolean {
   return /^(?:UPDATE|DELETE FROM|INSERT INTO) `/.test(sql)
