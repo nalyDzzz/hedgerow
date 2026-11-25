@@ -8,6 +8,7 @@ import { StatusBar } from '@/components/StatusBar'
 import { TitleBar } from '@/components/TitleBar'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { Workspace } from '@/components/Workspace'
+import { modalOpen } from '@/lib/utils'
 import { useActiveConnection, useActiveTab, useStore } from '@/store'
 import { useUpdates } from '@/updates'
 
@@ -36,7 +37,7 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || modalOpen()) return
       const state = useStore.getState()
       const active = state.tabs.find((t) => t.id === state.activeTabId)
       const key = event.key.toLowerCase()

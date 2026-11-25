@@ -4,7 +4,7 @@ import type { ErrorResult, OkResult, RowsResult } from '@shared/driver'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { cellText, formatCount, formatDuration, plural } from '@/lib/format'
-import { MOD, cn, shortcut } from '@/lib/utils'
+import { MOD, cn, modalOpen, shortcut } from '@/lib/utils'
 import { CONNECTION_LOST, ROW_LIMITS, countChanges, useStore, type ResultEntry, type Tab } from '@/store'
 import { FindBar } from './FindBar'
 import { ResultsGrid } from './ResultsGrid'
@@ -142,7 +142,8 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
   const [inspectorWidth, setInspectorWidth] = useState(380)
   /** The cell the grid asked the value panel to edit, as "row:column", and which request that was. */
   const [panelEdit, setPanelEdit] = useState<{ cell: string; request: number } | null>(null)
-  const [plan, setPlan] = useState<SavePlan | null>(null)
+  /** The statements under review, with the result they were planned for. */
+  const [plan, setPlan] = useState<(SavePlan & { tabId: string; entryId: number }) | null>(null)
   /** Set by a button out here that moves the selection in the grid, for the grid to pick up. */
   const gridWanted = useRef(false)
 
@@ -189,19 +190,29 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
     addRow(tab.id)
   }
 
+  // This panel stays as tabs come and go, and a plan must not outlast its result: shown over
+  // another, its statements would be offered, and run, as if they were that one's changes.
+  const reviewing = plan !== null && plan.tabId === tab.id && plan.entryId === entry?.id ? plan : null
+  useEffect(() => {
+    if (plan !== null && reviewing === null) setPlan(null)
+  }, [plan, reviewing])
+
   const review = async () => {
+    if (!entry) return
+    const planned = { tabId: tab.id, entryId: entry.id }
     try {
-      setPlan({ statements: await planSave(tab.id) })
+      setPlan({ ...planned, statements: await planSave(tab.id) })
     } catch (error) {
-      setPlan({ problem: error instanceof Error ? error.message : String(error) })
+      setPlan({ ...planned, problem: error instanceof Error ? error.message : String(error) })
     }
   }
 
   // Save is where people expect it, whenever there is something to save.
-  const canSave = changes > 0 && !tab.running && plan === null
+  const canSave = changes > 0 && !tab.running && reviewing === null
   useEffect(() => {
     if (!canSave) return
     const onKeyDown = (event: KeyboardEvent) => {
+      if (modalOpen()) return
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's') {
         event.preventDefault()
         void review()
@@ -209,9 +220,9 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-    // `review` only reads the tab id.
+    // `review` only reads the tab and the result it is for.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canSave, tab.id])
+  }, [canSave, tab.id, entry?.id])
 
   const selectedKey = selected ? `${selected.row}:${selected.col}` : null
   const editInPanel = panelEdit !== null && panelEdit.cell === selectedKey
@@ -496,13 +507,13 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
         )}
       </div>
 
-      {plan && rowsResult?.editing && (
+      {reviewing && rowsResult?.editing && (
         <SaveChangesDialog
-          plan={plan}
+          plan={reviewing}
           table={rowsResult.editing.table}
           connection={connectionName}
           changes={changes}
-          onSave={(statements) => save(tab.id, statements)}
+          onSave={(statements) => save(tab.id, reviewing.entryId, statements)}
           onStop={() => void cancel(tab.id)}
           onClose={() => setPlan(null)}
         />
