@@ -42,6 +42,8 @@ function createWindow(): void {
   window.once('ready-to-show', () => window.show())
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
+    // The tabs that owned the sessions went with the window.
+    void host.closeSessions()
   })
 
   // The window only ever shows the app itself; anything else opens in the browser.
@@ -102,5 +104,13 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== 'darwin') app.quit()
   })
 
-  app.on('before-quit', () => host.dispose())
+  let stopping = false
+  app.on('before-quit', (event) => {
+    if (stopping) return
+    // Quit a moment later, once running statements have been stopped. Cut off instead,
+    // a statement would finish on the server, and commit, after the app is gone.
+    stopping = true
+    event.preventDefault()
+    void host.shutdown().finally(() => app.quit())
+  })
 }

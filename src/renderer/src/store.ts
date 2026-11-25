@@ -119,6 +119,10 @@ export interface SortedBy {
 
 export const NO_VIEW: TableView = { where: '', orderBy: '' }
 
+/** Said wherever a tab finds that its connection is gone, before the way to carry on. */
+export const CONNECTION_LOST =
+  'The connection to the server was lost, and with it anything this tab had open there, such as a transaction.'
+
 export type DialogState =
   | { mode: 'closed' }
   | { mode: 'new' }
@@ -161,6 +165,11 @@ interface State {
   removeConnection(id: string): Promise<void>
   connect(id: string): Promise<void>
   disconnect(id: string): Promise<void>
+  /**
+   * Reads the list of databases and the open schemas again. Query tabs keep their
+   * sessions, and whatever they have open on the server.
+   */
+  refreshConnection(id: string): Promise<void>
   loadSchema(connectionId: string, database: string, force?: boolean): Promise<void>
   toggleNode(key: string, open?: boolean): void
   selectNode(key: string): void
@@ -396,6 +405,23 @@ export const useStore = create<State>()((set, get) => {
     return info.sessionId
   }
 
+  /** Lets go of a tab's session once its connection has failed, so that what the tab does next opens another. */
+  const forgetSession = (id: string, sessionId: string) => {
+    patchTab(id, (tab) => (tab.sessionId === sessionId ? { sessionId: null } : {}))
+    void api.sessions.close(sessionId).catch(() => {})
+  }
+
+  /**
+   * Says why something asked of a tab's session failed. If its connection is gone, the
+   * session is let go and the answer says so, with `again` as the way to carry on.
+   * Any other failure is passed on as it came.
+   */
+  const explainFailure = async (id: string, sessionId: string, error: unknown, again: string): Promise<string> => {
+    if (await api.sessions.usable(sessionId).catch(() => false)) return message(error)
+    forgetSession(id, sessionId)
+    return `${CONNECTION_LOST} ${again}`
+  }
+
   const createTab = (connectionId: string, options: NewTabOptions): Tab => {
     const connection = get().connections.find((c) => c.id === connectionId)
     const database = options.database ?? (connection?.database || null)
@@ -449,7 +475,11 @@ export const useStore = create<State>()((set, get) => {
     patchTab(id, { running: true, cancelRequested: false, selected: null })
     try {
       const sessionId = await sessionFor(id)
-      if (sessionId) replace(await api.sessions.execute(sessionId, sql, { rowLimit: tab.rowLimit }))
+      if (sessionId) {
+        const result = await api.sessions.execute(sessionId, sql, { rowLimit: tab.rowLimit })
+        if (result.kind === 'error' && result.connectionLost) forgetSession(id, sessionId)
+        replace(result)
+      }
     } catch (error) {
       // The call itself failed, so the session is gone; the next run opens a new one.
       patchTab(id, { sessionId: null })
@@ -469,8 +499,9 @@ export const useStore = create<State>()((set, get) => {
   ) => {
     const tab = tabById(id)
     if (!tab?.table || tab.running) return
+    let sessionId: string | null = null
     try {
-      const sessionId = await sessionFor(id)
+      sessionId = await sessionFor(id)
       if (!sessionId) return
       const next = await make(sessionId, tab as Tab & { table: TableRef })
       const sql = await api.sessions.tableQuery(sessionId, tab.table, next.view)
@@ -485,7 +516,10 @@ export const useStore = create<State>()((set, get) => {
       // New rows replace the ones on screen, and unsaved changes to them would go too.
       if (!askBeforeDiscarding(latest, 'run', proceed)) proceed()
     } catch (error) {
-      patchTab(id, { viewProblem: message(error) })
+      const problem = sessionId
+        ? await explainFailure(id, sessionId, error, 'Apply the view again to reconnect.')
+        : message(error)
+      patchTab(id, { viewProblem: problem })
     }
   }
 
@@ -592,6 +626,28 @@ export const useStore = create<State>()((set, get) => {
       await Promise.allSettled(sessions.map((sessionId) => api.sessions.close(sessionId)))
     },
 
+    async refreshConnection(id) {
+      const live = get().live[id]
+      if (!live?.sessionId || live.status !== 'connected') return get().connect(id)
+      const open = Object.keys(live.schemas)
+      try {
+        patchLive(id, { databases: await api.sessions.listDatabases(live.sessionId) })
+      } catch {
+        // The session behind the tree is gone. It gets another. The tabs have sessions of
+        // their own, and closing those would roll back whatever a tab has open.
+        void api.sessions.close(live.sessionId).catch(() => {})
+        try {
+          const info = await api.sessions.open(id)
+          const databases = await api.sessions.listDatabases(info.sessionId)
+          patchLive(id, { sessionId: info.sessionId, serverVersion: info.serverVersion, databases })
+        } catch (error) {
+          patchLive(id, { status: 'failed', error: message(error), sessionId: undefined })
+          return
+        }
+      }
+      for (const database of open) void get().loadSchema(id, database, true)
+    },
+
     async loadSchema(connectionId, database, force = false) {
       const live = get().live[connectionId]
       if (!live?.sessionId) return
@@ -662,7 +718,15 @@ export const useStore = create<State>()((set, get) => {
       if (!tab) return
       patchTab(id, { database })
       void get().loadSchema(tab.connectionId, database)
-      if (tab.sessionId) await api.sessions.setDatabase(tab.sessionId, database)
+      if (!tab.sessionId) return
+      try {
+        await api.sessions.setDatabase(tab.sessionId, database)
+      } catch {
+        // The session is still on the database it was on, and the tab must not name another.
+        // A session whose connection is gone says so at the next statement, and the one that
+        // replaces it opens on the database chosen here.
+        if (await api.sessions.usable(tab.sessionId).catch(() => false)) patchTab(id, { database: tab.database })
+      }
     },
 
     setRowLimit(id, rowLimit) {
@@ -686,6 +750,8 @@ export const useStore = create<State>()((set, get) => {
           if (tabById(id)?.cancelRequested) break
           current = sql
           const result = await api.sessions.execute(sessionId, sql, { rowLimit: tab.rowLimit })
+          // The result says that the connection was lost. The next run opens another.
+          if (result.kind === 'error' && result.connectionLost) forgetSession(id, sessionId)
           patchTab(id, (latest) => ({
             results: [...latest.results, { id: ++resultCounter, sql, result }],
             activeResult: latest.results.length,
@@ -865,7 +931,11 @@ export const useStore = create<State>()((set, get) => {
       const changes = rowChanges(rows, editing.key, entry.staged)
       const sessionId = await sessionFor(id)
       if (!sessionId) throw new Error('This tab was closed.')
-      return api.sessions.planEdits(sessionId, { columns, editing, changes })
+      try {
+        return await api.sessions.planEdits(sessionId, { columns, editing, changes })
+      } catch (error) {
+        throw new Error(await explainFailure(id, sessionId, error, 'Save again to reconnect.'))
+      }
     },
 
     async save(id, statements) {
@@ -884,13 +954,17 @@ export const useStore = create<State>()((set, get) => {
         const sessionId = await sessionFor(id)
         if (!sessionId) return { ok: false, message: 'This tab was closed.', durationMs: 0 }
         const outcome = await api.sessions.applyEdits(sessionId, statements)
-        if (!outcome.ok) return outcome
+        if (!outcome.ok) {
+          if (outcome.connectionLost) forgetSession(id, sessionId)
+          return outcome
+        }
 
         // The changes are in the database now, whatever happens to the reload below.
         replaceEntry({ staged: undefined, saved: countChanges(entry.staged), outside: undefined })
         // Read the rows again instead of trusting what was typed: the stored value is what
         // the server made of it, and a trigger or a default may have changed more.
         const result = await api.sessions.execute(sessionId, entry.sql, { rowLimit: tab.rowLimit })
+        if (result.kind === 'error' && result.connectionLost) forgetSession(id, sessionId)
         // The new rows were the last statements, in the order they were added.
         const added = entry.staged?.added ?? []
         const ids = added.map((_, index) => outcome.insertIds?.[statements.length - added.length + index] ?? null)

@@ -231,6 +231,41 @@ describe.skipIf(!port)('mysql driver', () => {
       expect(next.rows).toEqual([[0]])
       expect(Date.now() - started).toBeGreaterThanOrEqual(550)
     })
+
+    it('stops the statement a session is running when the session is closed', async () => {
+      await session.execute('CREATE TABLE slow (n INT PRIMARY KEY, v INT NOT NULL DEFAULT 0)', options)
+      const values = Array.from({ length: 40 }, (_, n) => `(${n}, 0)`).join(',')
+      await session.execute(`INSERT INTO slow VALUES ${values}`, options)
+
+      const other = await mysqlDriver.connect({ ...params, database: DB })
+      // Ten seconds of work, unless it is stopped.
+      const pending = other.execute('UPDATE slow SET v = v + 1 WHERE SLEEP(0.25) = 0', options)
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const started = Date.now()
+      await other.close()
+      const result = await pending
+      expect(Date.now() - started).toBeLessThan(3_000)
+      expect(result).toMatchObject({ kind: 'error', code: 'ER_QUERY_INTERRUPTED' })
+
+      // Nothing is left running that could still change the rows. A lock it held would make this wait.
+      const untouched = rows(await session.execute('SELECT COUNT(*) FROM slow WHERE v = 0 FOR UPDATE NOWAIT', options))
+      expect(untouched.rows).toEqual([[40]])
+    })
+
+    it('says when it was the connection that failed, so that a new one can be opened', async () => {
+      const other = await mysqlDriver.connect({ ...params, database: DB })
+      const id = rows(await other.execute('SELECT CONNECTION_ID()', options)).rows[0][0]
+      await session.execute(`KILL ${Number(id)}`, options)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      const result = await other.execute('SELECT 1', options)
+      expect(result).toMatchObject({ kind: 'error', connectionLost: true })
+      const saved = await other.applyEdits(['UPDATE `x`.`y` SET `a` = 1 WHERE `b` = 2'])
+      expect(saved).toMatchObject({ ok: false, connectionLost: true })
+
+      // A statement that the server refuses says nothing of the kind.
+      expect(await session.execute('SELEC nonsense', options)).not.toHaveProperty('connectionLost')
+    })
   })
 
   it('explains a refused connection in plain words', async () => {

@@ -87,7 +87,10 @@ export interface AppApi {
   }
   sessions: {
     open(connectionId: string, database?: string): Promise<SessionInfo>
+    /** Ends the session. A statement it is running is stopped first. */
     close(sessionId: string): Promise<void>
+    /** False once the session's connection has failed. A new one has to be opened to carry on. */
+    usable(sessionId: string): Promise<boolean>
     listDatabases(sessionId: string): Promise<string[]>
     describeDatabase(sessionId: string, database: string): Promise<TableInfo[]>
     setDatabase(sessionId: string, database: string): Promise<void>
@@ -133,6 +136,7 @@ export const API_CHANNELS = [
   'connections:test',
   'sessions:open',
   'sessions:close',
+  'sessions:usable',
   'sessions:listDatabases',
   'sessions:describeDatabase',
   'sessions:setDatabase',

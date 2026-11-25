@@ -8,6 +8,14 @@ import { drivers } from '../drivers'
 import type { HostMethods, HostRequest, HostResponse } from './host-protocol'
 
 const sessions = new Map<string, DriverSession>()
+/** Settles when every session that was asked to close has closed. */
+let closing: Promise<unknown> = Promise.resolve()
+
+/** Closes sessions, and keeps track of them until they have. */
+function closeAndTrack(open: DriverSession[]): Promise<unknown> {
+  closing = Promise.allSettled([closing, ...open.map((each) => each.close())])
+  return closing
+}
 
 function session(id: string): DriverSession {
   const found = sessions.get(id)
@@ -43,9 +51,17 @@ const handlers: Handlers = {
   async close(sessionId) {
     const open = sessions.get(sessionId)
     sessions.delete(sessionId)
-    await open?.close()
+    if (open) await closeAndTrack([open])
   },
 
+  // Waits for sessions that were already closing too, so that the app does not quit under them.
+  async closeAll() {
+    const open = [...sessions.values()]
+    sessions.clear()
+    await closeAndTrack(open)
+  },
+
+  usable: (sessionId) => sessions.get(sessionId)?.usable ?? false,
   listDatabases: (sessionId) => session(sessionId).listDatabases(),
   describeDatabase: (sessionId, database) => session(sessionId).describeDatabase(database),
   setDatabase: (sessionId, database) => session(sessionId).setDatabase(database),

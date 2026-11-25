@@ -23,6 +23,10 @@ export interface HostMethods {
     database: string | null
   }
   close(sessionId: string): void
+  /** Closes every session, which stops whatever each is running. */
+  closeAll(): void
+  /** False for a session that is gone or whose connection has failed. */
+  usable(sessionId: string): boolean
   listDatabases(sessionId: string): string[]
   describeDatabase(sessionId: string, database: string): TableInfo[]
   setDatabase(sessionId: string, database: string): void

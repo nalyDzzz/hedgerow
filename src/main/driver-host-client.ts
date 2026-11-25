@@ -37,6 +37,30 @@ export class DriverHost {
     })
   }
 
+  /**
+   * Closes every session without ending the process, for when the window that
+   * owned them is gone. A statement left running would otherwise finish on the server unseen.
+   */
+  closeSessions(): Promise<void> {
+    // Nothing was ever opened, and asking would start the process just to tell it to stop.
+    if (!this.child) return Promise.resolve()
+    return this.call('closeAll').catch(() => {})
+  }
+
+  /**
+   * Ends the process, after giving it up to `limit` milliseconds to stop the
+   * statements its sessions are running.
+   */
+  async shutdown(limit = 3_000): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const gaveUp = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, limit)
+    })
+    await Promise.race([this.closeSessions(), gaveUp])
+    clearTimeout(timer)
+    this.dispose()
+  }
+
   dispose(): void {
     this.child?.kill()
     this.child = null
