@@ -412,6 +412,36 @@ describe.skipIf(!port)('mysql driver', () => {
       expect(renamed.editing).toBeUndefined()
     })
 
+    it('is not fooled by a subquery or a WITH clause that takes the name of its own table', async () => {
+      await run(
+        'CREATE TABLE staff (id INT PRIMARY KEY, name VARCHAR(30) NOT NULL, boss INT NOT NULL, KEY staff_boss (boss))',
+      )
+      await run("INSERT INTO staff VALUES (1, 'ada', 3), (2, 'bob', 1), (3, 'cy', 2)")
+
+      // Each of these shows a person's boss as their id, and the server reports it as the table's
+      // `id`. Saved by that, a change typed into ada's row would be written to cy's.
+      for (const sql of [
+        'WITH staff AS (SELECT boss AS id, name, id AS boss FROM staff) SELECT * FROM staff',
+        'WITH staff (id, name, boss) AS (SELECT boss, name, id FROM staff) SELECT * FROM staff',
+        'SELECT * FROM (SELECT boss AS id, name, id AS boss FROM staff) AS staff',
+        'SELECT * FROM (SELECT boss AS id, name, id AS boss FROM staff) `staff`',
+      ]) {
+        const result = await select(sql)
+        expect(result.rows, sql).toContainEqual([3, 'ada', 1])
+        expect(result.editing, sql).toBeUndefined()
+        expect(result.readOnly, sql).toMatch(/gives the name `staff` to a subquery or a WITH clause/)
+      }
+
+      // Read directly, the rows can be edited, also when the table is named again in a condition.
+      for (const sql of [
+        'SELECT staff.* FROM staff WHERE staff.id > 0',
+        'SELECT * FROM staff WHERE boss IN (SELECT id FROM staff)',
+        `SELECT * FROM \`${DB}\`.\`staff\` AS staff`,
+      ]) {
+        expect((await select(sql)).editing, sql).toMatchObject({ table: { database: DB, table: 'staff' }, key: [0] })
+      }
+    })
+
     it('still offers editing when a join only filters the rows', async () => {
       const result = await select(
         'SELECT people.* FROM people JOIN order_lines l ON l.order_id = people.id + 6 WHERE l.line_no = 1',
