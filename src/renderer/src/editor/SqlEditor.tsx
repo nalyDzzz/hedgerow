@@ -20,9 +20,9 @@ import {
   lineNumbers,
   placeholder,
 } from '@codemirror/view'
-import { MYSQL, splitStatements } from '@/lib/sql'
+import { dialectFor, splitStatements } from '@/lib/sql'
 import { MOD } from '@/lib/utils'
-import { onStatementWritten, useStore, type SchemaState, type Tab } from '@/store'
+import { onStatementWritten, readsBackslashAsEscape, useStore, type SchemaState, type Tab } from '@/store'
 import { activeStatement, appearance, statementRangeAt } from './setup'
 
 const sqlLanguage = new Compartment()
@@ -64,13 +64,18 @@ function run(statements: string[]): void {
   if (viewTabId && statements.length > 0) void useStore.getState().run(viewTabId, statements)
 }
 
+/** Splits text of the tab on show the way its session reads it. */
+function split(text: string): string[] {
+  return splitStatements(text, viewTabId ? readsBackslashAsEscape(viewTabId) : true)
+}
+
 /** Runs the selection, or the statement under the cursor when nothing is selected. */
 export function runCurrentStatement(): boolean {
   if (!view) return false
   const { state } = view
   const selection = state.selection.main
   if (!selection.empty) {
-    run(splitStatements(state.sliceDoc(selection.from, selection.to)))
+    run(split(state.sliceDoc(selection.from, selection.to)))
     return true
   }
   // The statement as it was found, not split again: on its own it would be read without
@@ -83,7 +88,7 @@ export function runCurrentStatement(): boolean {
 
 export function runAllStatements(): boolean {
   if (!view) return false
-  run(splitStatements(view.state.doc.toString()))
+  run(split(view.state.doc.toString()))
   return true
 }
 
@@ -91,9 +96,9 @@ export function focusEditor(): void {
   view?.focus()
 }
 
-function sqlSupport(schema: SQLNamespace, database: string | null) {
+function sqlSupport(schema: SQLNamespace, database: string | null, backslashEscapes: boolean) {
   return sql({
-    dialect: MYSQL,
+    dialect: dialectFor(backslashEscapes),
     schema,
     defaultSchema: database ?? undefined,
     upperCaseKeywords: true,
@@ -116,7 +121,7 @@ function createState(doc: string): EditorState {
       highlightSelectionMatches(),
       appearance,
       activeStatement,
-      sqlLanguage.of(sqlSupport({}, null)),
+      sqlLanguage.of(sqlSupport({}, null, true)),
       placeholder(`Write SQL here. ${MOD}+Enter runs the statement under the cursor.`),
       Prec.highest(
         keymap.of([
@@ -164,6 +169,10 @@ export function SqlEditor({ tab }: { tab: Tab }) {
   const schemas = useStore((state) => state.live[tab.connectionId]?.schemas)
   const openTabIds = useStore((state) => state.tabs.map((t) => t.id).join(','))
   const schema = useMemo(() => completionSchema(schemas), [schemas])
+  // The editor reads strings the way the tab's session does, so that it ends each statement where the server will.
+  const backslashEscapes = useStore(
+    (state) => tab.backslashEscapes ?? state.live[tab.connectionId]?.backslashEscapes ?? true,
+  )
 
   // Create the view once.
   useEffect(() => {
@@ -187,10 +196,10 @@ export function SqlEditor({ tab }: { tab: Tab }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id])
 
-  // Keep autocomplete in step with the schema and the selected database.
+  // Keep autocomplete in step with the schema and the selected database, and the reading of strings with the session.
   useEffect(() => {
-    view?.dispatch({ effects: sqlLanguage.reconfigure(sqlSupport(schema, tab.database)) })
-  }, [schema, tab.database, tab.id])
+    view?.dispatch({ effects: sqlLanguage.reconfigure(sqlSupport(schema, tab.database, backslashEscapes)) })
+  }, [schema, tab.database, tab.id, backslashEscapes])
 
   // Forget the editor state of tabs that were closed.
   useEffect(() => {

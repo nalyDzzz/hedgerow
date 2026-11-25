@@ -169,6 +169,9 @@ function markStatement(state: EditorState): DecorationSet {
 export const activeStatement: Extension = StateField.define<DecorationSet>({
   create: markStatement,
   update: (value, transaction) =>
-    transaction.docChanged || transaction.selection ? markStatement(transaction.state) : value,
+    // Also when the language is set up anew: read another way, the statements end in other places.
+    transaction.docChanged || transaction.selection || transaction.reconfigured
+      ? markStatement(transaction.state)
+      : value,
   provide: (field) => EditorView.decorations.from(field),
 })

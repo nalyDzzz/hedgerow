@@ -189,6 +189,32 @@ describe.skipIf(!port)('mysql driver', () => {
     await other.close()
   })
 
+  it('says how the session reads a backslash in a string, and follows a change of it', async () => {
+    const other = await mysqlDriver.connect({ ...params, database: DB })
+    const reads = async (sql: string) => (await other.execute(sql, options)).backslashEscapes
+
+    expect(other.backslashEscapes).toBe(true)
+    expect(await reads('SELECT 1')).toBe(true)
+    expect(await reads("SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')")).toBe(false)
+    expect(other.backslashEscapes).toBe(false)
+    // Statements that change nothing leave it as it is, whether they return rows, fail, or do neither.
+    expect(await reads('SELECT n FROM many LIMIT 1')).toBe(false)
+    expect(await reads('SELEC nonsense')).toBe(false)
+    expect(await reads('DO 0')).toBe(false)
+    expect(await reads("SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_BACKSLASH_ESCAPES', '')")).toBe(true)
+    await other.close()
+
+    // A session that starts out that way says so from the start.
+    await session.execute("SET GLOBAL sql_mode = CONCAT(@@GLOBAL.sql_mode, ',NO_BACKSLASH_ESCAPES')", options)
+    try {
+      const plain = await mysqlDriver.connect({ ...params, database: DB })
+      expect(plain.backslashEscapes).toBe(false)
+      await plain.close()
+    } finally {
+      await session.execute("SET GLOBAL sql_mode = REPLACE(@@GLOBAL.sql_mode, ',NO_BACKSLASH_ESCAPES', '')", options)
+    }
+  })
+
   it('interrupts a running statement and stays usable', async () => {
     const started = Date.now()
     const pending = session.execute('SELECT SLEEP(15)', options)

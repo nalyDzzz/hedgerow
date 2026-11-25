@@ -45,7 +45,12 @@ const handlers: Handlers = {
     const opened = await drivers[driver].connect(params)
     const sessionId = randomUUID()
     sessions.set(sessionId, opened)
-    return { sessionId, serverVersion: opened.serverVersion, database: opened.database }
+    return {
+      sessionId,
+      serverVersion: opened.serverVersion,
+      database: opened.database,
+      backslashEscapes: opened.backslashEscapes,
+    }
   },
 
   async close(sessionId) {

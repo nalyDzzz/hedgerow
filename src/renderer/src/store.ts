@@ -29,6 +29,8 @@ export interface LiveConnection {
   /** Session used for the schema tree. Query tabs each get their own. */
   sessionId?: string
   serverVersion?: string
+  /** How a session on this connection reads a backslash in a string when it opens. */
+  backslashEscapes?: boolean
   databases: string[]
   schemas: Record<string, SchemaState>
 }
@@ -106,6 +108,11 @@ export interface Tab {
    * committed yet, and that are thrown away if the session ends first.
    */
   transaction: boolean
+  /**
+   * How the tab's session reads a backslash in a string, as it last said. Null
+   * until the tab has had a session. The editor reads the tab's SQL the same way.
+   */
+  backslashEscapes: boolean | null
   sql: string
   running: boolean
   cancelRequested: boolean
@@ -252,6 +259,11 @@ export function onStatementWritten(show: (tabId: string, sql: string) => void): 
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** What a result says about how its session reads a backslash, as the tab keeps it. Nothing when it does not say. */
+function stringReading(result: StatementResult): Pick<Tab, 'backslashEscapes'> | Record<string, never> {
+  return result.backslashEscapes === undefined ? {} : { backslashEscapes: result.backslashEscapes }
 }
 
 /** How many changes are staged: every edited cell, every row marked to be deleted, and every new row. */
@@ -415,7 +427,7 @@ export const useStore = create<State>()((set, get) => {
       void api.sessions.close(info.sessionId)
       return null
     }
-    patchTab(id, { sessionId: info.sessionId, database: info.database })
+    patchTab(id, { sessionId: info.sessionId, database: info.database, backslashEscapes: info.backslashEscapes })
     return info.sessionId
   }
 
@@ -450,6 +462,7 @@ export const useStore = create<State>()((set, get) => {
       viewProblem: null,
       sessionId: null,
       transaction: false,
+      backslashEscapes: null,
       sql: options.sql ?? '',
       running: false,
       cancelRequested: false,
@@ -486,6 +499,7 @@ export const useStore = create<State>()((set, get) => {
         ),
         database: result.database,
         transaction: result.transaction,
+        ...stringReading(result),
       }))
 
     patchTab(id, { running: true, cancelRequested: false, selected: null })
@@ -615,6 +629,7 @@ export const useStore = create<State>()((set, get) => {
           status: 'connected',
           sessionId: info.sessionId,
           serverVersion: info.serverVersion,
+          backslashEscapes: info.backslashEscapes,
           databases,
         })
         get().toggleNode(`c:${id}`, true)
@@ -658,7 +673,12 @@ export const useStore = create<State>()((set, get) => {
         try {
           const info = await api.sessions.open(id)
           const databases = await api.sessions.listDatabases(info.sessionId)
-          patchLive(id, { sessionId: info.sessionId, serverVersion: info.serverVersion, databases })
+          patchLive(id, {
+            sessionId: info.sessionId,
+            serverVersion: info.serverVersion,
+            backslashEscapes: info.backslashEscapes,
+            databases,
+          })
         } catch (error) {
           patchLive(id, { status: 'failed', error: message(error), sessionId: undefined })
           return
@@ -777,6 +797,7 @@ export const useStore = create<State>()((set, get) => {
             database: result.database,
             // A session that was let go has nothing open any more, whatever its last answer said.
             ...(latest.sessionId === sessionId ? { transaction: result.transaction } : {}),
+            ...stringReading(result),
           }))
           if (result.kind === 'error' || tabById(id)?.cancelRequested) break
         }
@@ -1008,6 +1029,7 @@ export const useStore = create<State>()((set, get) => {
         patchTab(id, (latest) => ({
           database: result.database,
           ...(latest.sessionId === sessionId ? { transaction: result.transaction } : {}),
+          ...stringReading(result),
         }))
         return outcome
       } catch (error) {
@@ -1053,6 +1075,18 @@ export function useActiveConnection(): SavedConnection | undefined {
     const id = tab?.connectionId ?? state.focusedConnectionId
     return state.connections.find((connection) => connection.id === id)
   })
+}
+
+/**
+ * How the session a tab runs on reads a backslash in a string: as the tab's own
+ * session last said, else as the connection's first session did, else the way
+ * MySQL reads one unless it is told otherwise.
+ */
+export function readsBackslashAsEscape(tabId: string): boolean {
+  const state = useStore.getState()
+  const tab = state.tabs.find((each) => each.id === tabId)
+  if (!tab) return true
+  return tab.backslashEscapes ?? state.live[tab.connectionId]?.backslashEscapes ?? true
 }
 
 export function useActiveTab(): Tab | undefined {
