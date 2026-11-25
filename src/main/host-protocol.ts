@@ -21,6 +21,7 @@ export interface HostMethods {
     sessionId: string
     serverVersion: string
     database: string | null
+    backslashEscapes: boolean
   }
   close(sessionId: string): void
   /** Closes every session, which stops whatever each is running. */

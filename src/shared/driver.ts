@@ -157,6 +157,12 @@ export type StatementResult = (RowsResult | OkResult | ErrorResult) & {
    * that are not committed, and that are thrown away if the session ends first.
    */
   transaction: boolean
+  /**
+   * How the session reads a backslash inside a string after the statement, as
+   * `DriverSession.backslashEscapes` says it. A statement can change it. Absent
+   * when the statement never reached a session.
+   */
+  backslashEscapes?: boolean
 }
 
 export interface ExecuteOptions {
@@ -261,6 +267,13 @@ export interface DriverSession {
   readonly database: string | null
   /** False once the connection has failed or the session was closed. Nothing can be run on it again. */
   readonly usable: boolean
+  /**
+   * True when the session reads a backslash inside a string as the start of an
+   * escape, so that `'it\'s'` is one string. False when it takes a backslash as
+   * it stands, and that string ends at the second quote. Whoever splits a script
+   * into statements has to read strings the same way.
+   */
+  readonly backslashEscapes: boolean
   listDatabases(): Promise<string[]>
   /** Tables and views of one database, with their columns. */
   describeDatabase(database: string): Promise<TableInfo[]>

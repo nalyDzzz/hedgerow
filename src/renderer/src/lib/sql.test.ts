@@ -47,6 +47,16 @@ describe('splitting a script into statements', () => {
     expect(splitStatements("SELECT 'C:\\\\'; SELECT 2")).toEqual(["SELECT 'C:\\\\'", 'SELECT 2'])
   })
 
+  it('reads a backslash as a plain character for a session that does', () => {
+    // Under NO_BACKSLASH_ESCAPES the string ends at the quote after the backslash.
+    expect(splitStatements("SELECT 'a\\'; SELECT 2;", false)).toEqual(["SELECT 'a\\'", 'SELECT 2'])
+    expect(splitStatements("SELECT 'C:\\\\'; SELECT 2", false)).toEqual(["SELECT 'C:\\\\'", 'SELECT 2'])
+    // Read the usual way, the quote is part of the string, which then never ends.
+    expect(splitStatements("SELECT 'a\\'; SELECT 2;", true)).toEqual(["SELECT 'a\\'; SELECT 2;"])
+    // And what the usual reading takes for one string is two statements here, the second one broken.
+    expect(splitStatements("SELECT 'it\\'s; fine'; SELECT 2;", false)).toEqual(["SELECT 'it\\'s", "fine'; SELECT 2;"])
+  })
+
   it('leaves a comment before a statement out of it', () => {
     expect(splitStatements('-- switch\nUSE other_db;\n/* note */ USE third_db;')).toEqual(['USE other_db', 'USE third_db'])
   })

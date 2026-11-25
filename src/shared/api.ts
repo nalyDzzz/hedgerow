@@ -60,6 +60,8 @@ export interface SessionInfo {
   sessionId: string
   serverVersion: string
   database: string | null
+  /** Whether the session reads a backslash in a string as an escape. See `DriverSession.backslashEscapes`. */
+  backslashEscapes: boolean
 }
 
 export type ThemeMode = 'system' | 'light' | 'dark'

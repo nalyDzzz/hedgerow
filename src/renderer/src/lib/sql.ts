@@ -9,6 +9,18 @@ import { MySQL, SQLDialect } from '@codemirror/lang-sql'
  */
 export const MYSQL = SQLDialect.define({ ...MySQL.spec, backslashEscapes: true })
 
+/** MySQL as a session reads it that has NO_BACKSLASH_ESCAPES set: a backslash is a character like any other. */
+const MYSQL_PLAIN_BACKSLASH = SQLDialect.define({ ...MySQL.spec, backslashEscapes: false })
+
+/**
+ * The dialect to read a script with, given how the session it will run on
+ * reads a backslash in a string. The two readings put the end of `'a\'` in
+ * different places, so the editor has to follow the session, not assume.
+ */
+export function dialectFor(backslashEscapes: boolean): SQLDialect {
+  return backslashEscapes ? MYSQL : MYSQL_PLAIN_BACKSLASH
+}
+
 /** A parsed script, as the editor keeps one for the text it shows. */
 export type SqlTree = ReturnType<typeof MYSQL.language.parser.parse>
 
@@ -361,9 +373,11 @@ export function statementRanges(tree: SqlTree, text: string): StatementRange[] {
 /**
  * Splits a script into single statements using the editor's own SQL parser,
  * so semicolons inside strings and comments are never mistaken for separators.
+ * `backslashEscapes` says how the session that will run them reads a backslash
+ * in a string, which decides where a string ends.
  */
-export function splitStatements(text: string): string[] {
-  const statements = statementRanges(MYSQL.language.parser.parse(text), text)
+export function splitStatements(text: string, backslashEscapes = true): string[] {
+  const statements = statementRanges(dialectFor(backslashEscapes).language.parser.parse(text), text)
     .map(({ from, to }) => text.slice(from, to).trim())
     .filter((statement) => statement !== '')
   if (statements.length > 0) return statements

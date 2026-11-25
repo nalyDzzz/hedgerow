@@ -58,6 +58,8 @@ const ER_QUERY_INTERRUPTED = 1317
 const STATUS_IN_TRANSACTION = 1
 /** Another bit of it: each statement is committed by itself, unless a transaction was started. */
 const STATUS_AUTOCOMMIT = 2
+/** And another: the session has NO_BACKSLASH_ESCAPES set, and takes a backslash in a string as it stands. */
+const STATUS_NO_BACKSLASH_ESCAPES = 512
 /**
  * Storage engines that keep no transactions, in lower case. What is written to
  * one of their tables stays written, so a save could not be all or nothing.
@@ -412,6 +414,8 @@ class MysqlSession implements DriverSession {
     private readonly params: ConnectionParams,
     readonly serverVersion: string,
     database: string | null,
+    /** How the session reads a backslash in a string when it opens. Kept up to date from the server's status. */
+    private escapes: boolean,
   ) {
     this.currentDatabase = database
     connection.on('error', () => {
@@ -425,6 +429,17 @@ class MysqlSession implements DriverSession {
 
   get usable(): boolean {
     return !this.closed
+  }
+
+  get backslashEscapes(): boolean {
+    return this.escapes
+  }
+
+  /** Takes in the status that came with an answer from the server. */
+  private noteStatus(status: number | undefined): void {
+    if (typeof status !== 'number') return
+    this.status = status
+    this.escapes = (status & STATUS_NO_BACKSLASH_ESCAPES) === 0
   }
 
   async listDatabases(): Promise<string[]> {
@@ -494,7 +509,9 @@ class MysqlSession implements DriverSession {
       if (/^\s*use\s/i.test(sql)) await this.refreshDatabase()
       const transaction = await this.transactionOpen(outcome.kind === 'rows' && isQuery(sql))
 
-      if (outcome.kind === 'ok') return { ...outcome, durationMs, database: this.currentDatabase, transaction }
+      const session = { database: this.currentDatabase, transaction, backslashEscapes: this.escapes }
+
+      if (outcome.kind === 'ok') return { ...outcome, durationMs, ...session }
 
       if (!outcome.truncated && outcome.rows.length === options.rowLimit + 1) {
         outcome.rows.pop()
@@ -506,7 +523,7 @@ class MysqlSession implements DriverSession {
       const editing = await this.describeEditing(sql, fields, rows.columns, rows.rows).catch(() => ({
         readOnly: 'It could not be worked out whether these rows can be edited.',
       }))
-      return { ...rows, ...editing, durationMs, database: this.currentDatabase, transaction }
+      return { ...rows, ...editing, durationMs, ...session }
     } catch (error) {
       this.running = false
       const failure = error as MysqlError
@@ -523,6 +540,7 @@ class MysqlSession implements DriverSession {
         durationMs,
         database: this.currentDatabase,
         transaction: await this.transactionOpen(isQuery(sql)),
+        backslashEscapes: this.escapes,
       }
     }
   }
@@ -578,7 +596,7 @@ class MysqlSession implements DriverSession {
       this.status !== null && (this.status & STATUS_AUTOCOMMIT) !== 0 && (this.status & STATUS_IN_TRANSACTION) === 0
     if (!this.statusIsCurrent && !(onlyRead && idle)) {
       try {
-        this.status = (await runCommand(this.connection, 'DO 0')).serverStatus ?? this.status
+        this.noteStatus((await runCommand(this.connection, 'DO 0')).serverStatus)
       } catch {
         // What was last known stands.
       }
@@ -1077,7 +1095,7 @@ class MysqlSession implements DriverSession {
         const header = row as OkHeader
         setIndex += 1
         if (typeof header.serverStatus === 'number') {
-          this.status = header.serverStatus
+          this.noteStatus(header.serverStatus)
           this.statusIsCurrent = true
         }
         if (ok === null) {
@@ -1110,13 +1128,14 @@ export const mysqlDriver: Driver = {
   async connect(params: ConnectionParams): Promise<DriverSession> {
     const connection = await openConnection(params)
     try {
-      const rows = await queryRows(connection, 'SELECT VERSION(), DATABASE()')
-      const [version, database] = rows[0] ?? []
+      const rows = await queryRows(connection, 'SELECT VERSION(), DATABASE(), @@SESSION.sql_mode')
+      const [version, database, mode] = rows[0] ?? []
       return new MysqlSession(
         connection,
         params,
         String(version ?? ''),
         typeof database === 'string' ? database : null,
+        !String(mode ?? '').toUpperCase().includes('NO_BACKSLASH_ESCAPES'),
       )
     } catch (error) {
       connection.destroy()
