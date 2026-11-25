@@ -44,7 +44,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/menu'
-import { cellText, formatBytes, isBinary } from '@/lib/format'
+import { copyText, formatBytes, isBinary } from '@/lib/format'
 import { MOD, cn, shortcut } from '@/lib/utils'
 import type { CellRef, NewRow, StagedChanges } from '@/store'
 
@@ -527,7 +527,7 @@ export function ResultsGrid({
 
     if (mod && event.key.toLowerCase() === 'c') {
       event.preventDefault()
-      void navigator.clipboard.writeText(cellText(shown(selected) ?? ''))
+      void navigator.clipboard.writeText(copyText(shown(selected) ?? ''))
       return
     }
 
@@ -886,7 +886,7 @@ export function ResultsGrid({
                 <ContextMenuSeparator />
               </>
             )}
-            <ContextMenuItem onSelect={() => void navigator.clipboard.writeText(cellText(shown(menuCell) ?? ''))}>
+            <ContextMenuItem onSelect={() => void navigator.clipboard.writeText(copyText(shown(menuCell) ?? ''))}>
               <Copy />
               Copy
               <Shortcut>{shortcut(MOD, 'C')}</Shortcut>
