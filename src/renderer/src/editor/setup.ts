@@ -3,6 +3,7 @@ import { HighlightStyle, ensureSyntaxTree, syntaxHighlighting, syntaxTree } from
 import { StateField, type EditorState, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
+import { statementAt, statementRanges, type SqlTree, type StatementRange } from '@/lib/sql'
 
 // Colors are CSS variables, so the editor follows the app theme with no reconfiguration.
 const highlightStyle = HighlightStyle.define([
@@ -117,31 +118,28 @@ const theme = EditorView.theme({
 /** Theme plus syntax colors: everything an editor needs to look right in either app theme. */
 export const appearance: Extension = [theme, syntaxHighlighting(highlightStyle)]
 
-export interface Range {
-  from: number
-  to: number
-}
+/** The statements of a parsed text. Kept per parse, so moving the cursor does not read the text again. */
+const statementsOf = new WeakMap<SqlTree, StatementRange[]>()
 
 /**
- * The statement Run would execute for a cursor at `pos`: the one the cursor is
- * in, else the one just before it on the same line, else the next one.
+ * The statement Run would execute for a cursor at `pos`, as `statementAt`
+ * picks it, or null when the cursor is on none.
+ *
+ * A long text is parsed a piece at a time. Marking the statement makes do with
+ * what has been parsed so far. Running one does not: with `whole` the text is
+ * parsed to its end first, because a statement cut off where the parser happens
+ * to have stopped is not the statement that was written.
  */
-export function statementRangeAt(state: EditorState, pos: number): Range | null {
-  const tree = ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state)
-  const cursor = tree.cursor()
-  if (!cursor.firstChild()) return null
-
-  let before: Range | null = null
-  let after: Range | null = null
-  do {
-    if (cursor.name !== 'Statement') continue
-    if (cursor.from <= pos && pos <= cursor.to) return { from: cursor.from, to: cursor.to }
-    if (cursor.to < pos) before = { from: cursor.from, to: cursor.to }
-    else if (after === null) after = { from: cursor.from, to: cursor.to }
-  } while (cursor.nextSibling())
-
-  if (before && state.doc.lineAt(before.to).number === state.doc.lineAt(pos).number) return before
-  return after ?? before
+export function statementRangeAt(state: EditorState, pos: number, whole = false): StatementRange | null {
+  const length = state.doc.length
+  const tree = (ensureSyntaxTree(state, length, whole ? 30_000 : 200) ?? syntaxTree(state)) as SqlTree
+  if (whole && tree.length < length) return null
+  let ranges = statementsOf.get(tree)
+  if (!ranges) {
+    ranges = statementRanges(tree, state.doc.toString())
+    statementsOf.set(tree, ranges)
+  }
+  return statementAt(ranges, (from, to) => state.sliceDoc(from, to), pos)
 }
 
 const statementLine = Decoration.line({ class: 'cm-statement-line' })

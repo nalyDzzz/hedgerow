@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { json } from '@codemirror/lang-json'
-import { MySQL, sql } from '@codemirror/lang-sql'
+import { sql } from '@codemirror/lang-sql'
 import { bracketMatching, foldGutter, foldKeymap } from '@codemirror/language'
 import { highlightSelectionMatches } from '@codemirror/search'
 import { EditorState } from '@codemirror/state'
 import { EditorView, drawSelection, keymap, lineNumbers } from '@codemirror/view'
+import { MYSQL } from '@/lib/sql'
 import { appearance } from './setup'
 
 /** Read-only, selectable text with syntax colors: foldable JSON, or SQL. */
@@ -21,7 +22,7 @@ export function CodeView({ value, language = 'json' }: { value: string; language
           EditorState.readOnly.of(true),
           EditorView.lineWrapping,
           // A statement can span lines, so numbered lines would not number statements.
-          ...(language === 'json' ? [lineNumbers(), foldGutter(), json(), keymap.of(foldKeymap)] : [sql({ dialect: MySQL })]),
+          ...(language === 'json' ? [lineNumbers(), foldGutter(), json(), keymap.of(foldKeymap)] : [sql({ dialect: MYSQL })]),
           drawSelection(),
           bracketMatching(),
           highlightSelectionMatches(),
