@@ -398,8 +398,9 @@ export function givesNameAway(sql: string, name: string): boolean {
  * and would cut the file short without anything saying so.
  */
 export function writesFile(sql: string): boolean {
-  // Nearly no statement has the words at all, and a long one is not worth taking apart to find that out.
-  if (!/\binto\s+(?:outfile|dumpfile)\b/i.test(sql)) return false
+  // Nearly no statement has the word at all, and a long one is not worth taking apart to find that out.
+  // Only the one word is looked for: a comment may stand between INTO and it, and the tokens leave that out.
+  if (!/outfile|dumpfile/i.test(sql)) return false
   // Read both ways a session may read a string. Wrongly taken for one, a statement only loses its row limit.
   return [true, false].some((backslashEscapes) => {
     const list = tokenize(sql, { backslashEscapes })

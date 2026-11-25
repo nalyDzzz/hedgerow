@@ -521,6 +521,13 @@ describe('a query that writes its rows to a file', () => {
     expect(writesFile("select a into\n  dumpfile '/tmp/a' from t")).toBe(true)
   })
 
+  it('is told with a comment between the words', () => {
+    expect(writesFile("SELECT * FROM t INTO /* audit */ OUTFILE '/tmp/t.csv'")).toBe(true)
+    expect(writesFile("SELECT * FROM t INTO/**/OUTFILE '/tmp/t.csv'")).toBe(true)
+    expect(writesFile("SELECT * FROM t INTO -- to disk\n OUTFILE '/tmp/t.csv'")).toBe(true)
+    expect(writesFile("SELECT * FROM t INTO # to disk\n DUMPFILE '/tmp/t.bin'")).toBe(true)
+  })
+
   it('is not one that only mentions them, or that fills variables', () => {
     expect(writesFile('SELECT * FROM t')).toBe(false)
     expect(writesFile('SELECT COUNT(*) INTO @n FROM t')).toBe(false)
