@@ -5,6 +5,7 @@ import { DRIVER_INFO, type DriverId, type TlsMode } from '@shared/driver'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Input, Label, Select } from '@/components/ui/input'
+import { plural } from '@/lib/format'
 import { HUES, nextFreeHue, tintStyle } from '@/lib/hues'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
@@ -14,6 +15,16 @@ const TLS_OPTIONS: { value: TlsMode; label: string }[] = [
   { value: 'required', label: 'Encrypt' },
   { value: 'verify', label: 'Encrypt and verify the server certificate' },
 ]
+
+/** What each choice does and does not protect against, said under the choice. */
+const TLS_NOTES: Record<TlsMode, string> = {
+  disabled:
+    'Nothing is encrypted. On a network, the queries, the results and the sign-in can be read on the way. ' +
+    'Fine for a database on this computer.',
+  required:
+    'Encrypted, without checking who the server is. That stops eavesdropping, but not a server that poses as yours.',
+  verify: 'Encrypted, and the server has to prove that it is this host.',
+}
 
 type TestState = { status: 'idle' } | { status: 'testing' } | { status: 'done'; result: TestResult }
 
@@ -29,7 +40,12 @@ function ConnectionForm({ editing, onDone }: { editing?: SavedConnection; onDone
   // null means "leave the stored password as it is".
   const [password, setPassword] = useState<string | null>(editing ? null : '')
   const [database, setDatabase] = useState(editing?.database ?? '')
-  const [tls, setTls] = useState<TlsMode>(editing?.tls ?? 'disabled')
+  // A new connection is encrypted unless that is turned off. One that was saved keeps what it was saved with.
+  const [tls, setTls] = useState<TlsMode>(editing?.tls ?? 'required')
+  const [ca, setCa] = useState(editing?.ca ?? '')
+  /** The file the certificates were just read from. Not kept, so a saved connection has none to show. */
+  const [caFile, setCaFile] = useState('')
+  const [caProblem, setCaProblem] = useState<string | null>(null)
   const [hue, setHue] = useState(editing?.hue ?? nextFreeHue(connections.map((c) => c.hue)))
   const [test, setTest] = useState<TestState>({ status: 'idle' })
   const [saving, setSaving] = useState(false)
@@ -48,8 +64,22 @@ function ConnectionForm({ editing, onDone }: { editing?: SavedConnection; onDone
     password: password ?? undefined,
     database: database.trim(),
     tls,
+    ca,
     hue,
   })
+
+  const chooseCa = async () => {
+    const chosen = await window.api.connections.chooseCertificate()
+    if (!chosen) return
+    if ('problem' in chosen) {
+      setCaProblem(chosen.problem)
+      return
+    }
+    setCa(chosen.ca)
+    setCaFile(chosen.name)
+    setCaProblem(null)
+  }
+  const certificates = ca.match(/-----BEGIN CERTIFICATE-----/g)?.length ?? 0
 
   const runTest = async () => {
     setTest({ status: 'testing' })
@@ -149,6 +179,43 @@ function ConnectionForm({ editing, onDone }: { editing?: SavedConnection; onDone
               </option>
             ))}
           </Select>
+        </div>
+
+        <div className="col-span-6 -mt-1.5 text-[12px] leading-snug text-muted-foreground">
+          <p>{TLS_NOTES[tls]}</p>
+          {tls === 'verify' && (
+            <div className="mt-2 flex items-center gap-2">
+              <p className="min-w-0 flex-1">
+                {ca
+                  ? `Only the ${plural(certificates, 'certificate')} from ${caFile || 'the file that was chosen'} ` +
+                    `${certificates === 1 ? 'is' : 'are'} trusted to sign for the server.`
+                  : 'The public certificate authorities are trusted. A server with an authority of its own, ' +
+                    'as hosted databases often have, needs that authority\u2019s certificate file.'}
+              </p>
+              <Button size="sm" variant="outline" className="shrink-0" onClick={() => void chooseCa()}>
+                {ca ? 'Replace…' : 'Choose file…'}
+              </Button>
+              {ca && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="shrink-0"
+                  onClick={() => {
+                    setCa('')
+                    setCaFile('')
+                    setCaProblem(null)
+                  }}
+                >
+                  Remove
+                </Button>
+              )}
+            </div>
+          )}
+          {caProblem && (
+            <p className="selectable mt-1.5 text-destructive" role="alert">
+              {caProblem}
+            </p>
+          )}
         </div>
 
         <div className="col-span-6">

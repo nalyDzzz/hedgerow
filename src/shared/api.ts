@@ -28,6 +28,8 @@ export interface SavedConnection {
   user: string
   database: string
   tls: TlsMode
+  /** The certificate authorities to trust when the server is verified, as PEM text. Empty for the public ones. */
+  ca: string
   hue: ConnectionHue
   hasPassword: boolean
 }
@@ -44,8 +46,13 @@ export interface ConnectionInput {
   password?: string
   database: string
   tls: TlsMode
+  /** As in `SavedConnection`. Left out, it is empty. */
+  ca?: string
   hue: ConnectionHue
 }
+
+/** A certificate file that was chosen, or why it cannot be used. Null when no file was chosen. */
+export type ChosenCertificate = { name: string; ca: string } | { problem: string } | null
 
 export type TestResult = { ok: true; serverVersion: string } | { ok: false; message: string }
 
@@ -84,6 +91,8 @@ export interface AppApi {
     save(input: ConnectionInput): Promise<SavedConnection>
     remove(id: string): Promise<void>
     test(input: ConnectionInput): Promise<TestResult>
+    /** Asks for a file of certificate authorities and reads the certificates in it. */
+    chooseCertificate(): Promise<ChosenCertificate>
   }
   sessions: {
     open(connectionId: string, database?: string): Promise<SessionInfo>
@@ -134,6 +143,7 @@ export const API_CHANNELS = [
   'connections:save',
   'connections:remove',
   'connections:test',
+  'connections:chooseCertificate',
   'sessions:open',
   'sessions:close',
   'sessions:usable',

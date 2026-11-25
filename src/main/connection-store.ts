@@ -14,6 +14,7 @@ interface Row {
   password: Uint8Array | null
   database: string
   tls: string
+  ca: string
   hue: number
 }
 
@@ -40,10 +41,16 @@ export class ConnectionStore {
         password   BLOB,
         database   TEXT NOT NULL DEFAULT '',
         tls        TEXT NOT NULL DEFAULT 'disabled',
+        ca         TEXT NOT NULL DEFAULT '',
         hue        INTEGER NOT NULL DEFAULT 250,
         created_at INTEGER NOT NULL
       )
     `)
+    // A file made by an earlier version has no column for the certificate authorities.
+    const columns = this.db.prepare('PRAGMA table_info(connections)').all() as unknown as { name: string }[]
+    if (!columns.some((column) => column.name === 'ca')) {
+      this.db.exec("ALTER TABLE connections ADD COLUMN ca TEXT NOT NULL DEFAULT ''")
+    }
   }
 
   list(): SavedConnection[] {
@@ -70,12 +77,12 @@ export class ConnectionStore {
 
     this.db
       .prepare(
-        `INSERT INTO connections (id, name, driver, host, port, user, password, database, tls, hue, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO connections (id, name, driver, host, port, user, password, database, tls, ca, hue, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            name = excluded.name, driver = excluded.driver, host = excluded.host,
            port = excluded.port, user = excluded.user, password = excluded.password,
-           database = excluded.database, tls = excluded.tls, hue = excluded.hue`,
+           database = excluded.database, tls = excluded.tls, ca = excluded.ca, hue = excluded.hue`,
       )
       .run(
         id,
@@ -87,6 +94,7 @@ export class ConnectionStore {
         password,
         input.database.trim(),
         input.tls,
+        input.ca ?? '',
         input.hue,
         Date.now(),
       )
@@ -112,6 +120,7 @@ export class ConnectionStore {
         password: this.password(row),
         database: row.database || undefined,
         tls: row.tls as TlsMode,
+        ca: row.ca || undefined,
       },
     }
   }
@@ -143,6 +152,7 @@ export class ConnectionStore {
       user: row.user,
       database: row.database,
       tls: row.tls as TlsMode,
+      ca: row.ca,
       hue: row.hue,
       hasPassword: row.password !== null || this.unsavedPasswords.has(row.id),
     }
