@@ -97,7 +97,7 @@ export function SaveChangesDialog({
                 <CircleAlert className="mt-0.5 size-4 shrink-0" />
                 <div className="min-w-0 text-[12.5px]">
                   <p className="font-medium">
-                    {failure.notUndone ? 'The save was stopped, but not all of it was undone.' : 'Nothing was saved.'}
+                    {failure.notUndone ? 'The save did not go through, but part of it may remain.' : 'Nothing was saved.'}
                   </p>
                   <p className="selectable mt-0.5">
                     {failure.statement !== undefined &&

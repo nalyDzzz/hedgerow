@@ -635,6 +635,8 @@ class MysqlSession implements DriverSession {
     let inTransaction = false
     /** True from the moment COMMIT is sent until the server has answered it. */
     let committing = false
+    /** True once a statement has been sent, and with it whatever a trigger does when it runs. */
+    let sent = false
     /** The statement being run, while one is. */
     let at: number | undefined
     const insertIds: (string | null)[] = []
@@ -664,6 +666,7 @@ class MysqlSession implements DriverSession {
         if (this.cancelRequested) {
           throw Object.assign(new Error('Query execution was interrupted'), { code: 'ER_QUERY_INTERRUPTED' })
         }
+        sent = true
         const header = await runCommand(this.connection, sql)
         // A lenient server stores a value it had to cut or change and only warns about it.
         if (header.warningStatus) {
@@ -710,7 +713,7 @@ class MysqlSession implements DriverSession {
           'The connection failed while the changes were being committed, so it is not known whether they were ' +
           'stored. Run the statement again to see what the table holds now.'
       } else if (inTransaction) {
-        notUndone = await this.rollBack()
+        notUndone = await this.rollBack(sent)
       }
       return {
         ok: false,
@@ -727,11 +730,13 @@ class MysqlSession implements DriverSession {
   }
 
   /**
-   * Takes back what a save has done so far. Gives the server's words when it
-   * could not take all of it back: a table that keeps no transactions, written
-   * to by the statements or by a trigger they set off, holds on to what it got.
+   * Takes back what a save has done so far. Says so when that cannot be taken
+   * for done: a table that keeps no transactions, written to by the statements
+   * or by a trigger they set off, holds on to what it got. The server warns of
+   * that when it rolls back. `sent` says whether any statement of the save had
+   * been sent at all.
    */
-  private async rollBack(): Promise<string | undefined> {
+  private async rollBack(sent: boolean): Promise<string | undefined> {
     try {
       const undone = await runCommand(this.connection, 'ROLLBACK')
       if (!undone.warningStatus) return undefined
@@ -739,8 +744,14 @@ class MysqlSession implements DriverSession {
       const said = warnings.map((warning) => String(warning[2])).join(' ')
       return `The server could not undo all of it. It said: ${said || 'nothing more.'}`
     } catch {
-      // The connection is gone, and the server rolls back whatever a connection leaves open.
-      return undefined
+      // The connection is gone. The server rolls back what a connection leaves open, so the
+      // changes to the table itself are undone. But nobody is left to hear its warning.
+      if (!sent) return undefined
+      return (
+        'The connection failed before the server could say that everything was undone. It takes back what the ' +
+        'statements changed in the table when a connection ends. What a trigger may have written to a table ' +
+        'that keeps no transactions stays, and it is not known whether one did.'
+      )
     }
   }
 
