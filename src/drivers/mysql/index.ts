@@ -31,6 +31,7 @@ import {
   isQuery,
   quoteIdentifier,
   tableQuery,
+  writesFile,
   type SqlMode,
 } from './sql'
 
@@ -470,8 +471,9 @@ class MysqlSession implements DriverSession {
       this.assertOpen()
       this.begin()
       await this.settle()
-      // One extra row tells us whether the result was cut short.
-      await this.setSelectLimit(options.rowLimit + 1)
+      // One extra row tells us whether the result was cut short. A statement that writes its
+      // rows to a file has no result to cut, and the limit would cut the file instead.
+      await this.setSelectLimit(writesFile(sql) ? null : options.rowLimit + 1)
       if (this.cancelRequested) {
         throw Object.assign(new Error('Query execution was interrupted'), { code: 'ER_QUERY_INTERRUPTED' })
       }

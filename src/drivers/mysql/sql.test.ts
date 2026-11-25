@@ -16,6 +16,7 @@ import {
   quoteString,
   tableQuery,
   tokenize,
+  writesFile,
 } from './sql'
 
 const usual = { backslashEscapes: true }
@@ -511,6 +512,20 @@ describe('a table name given to something else', () => {
     // Read with backslash escapes, the string runs on and hides the alias. The session may not read it so.
     const sql = "SELECT * FROM (SELECT ref AS id, '\\' AS x FROM people) AS people -- '"
     expect(givesNameAway(sql, 'people')).toBe(true)
+  })
+})
+
+describe('a query that writes its rows to a file', () => {
+  it('is told by the words, wherever they stand', () => {
+    expect(writesFile("SELECT * FROM t INTO OUTFILE '/tmp/t.csv'")).toBe(true)
+    expect(writesFile("select a into\n  dumpfile '/tmp/a' from t")).toBe(true)
+  })
+
+  it('is not one that only mentions them, or that fills variables', () => {
+    expect(writesFile('SELECT * FROM t')).toBe(false)
+    expect(writesFile('SELECT COUNT(*) INTO @n FROM t')).toBe(false)
+    expect(writesFile("SELECT 'INTO OUTFILE' FROM t -- INTO OUTFILE")).toBe(false)
+    expect(writesFile('SELECT `into`, outfile FROM t')).toBe(false)
   })
 })
 
