@@ -18,14 +18,20 @@ be added without touching the UI.
 ## What works
 
 - Saved connections, with passwords encrypted by the operating system's keychain
+- Encrypted connections, on by default. A connection can also verify who the server is, against the public
+  certificate authorities or a certificate file of your own, as hosted databases need
 - A schema tree: databases, tables, views, columns and keys
 - A SQL editor with MySQL syntax, schema-aware autocomplete and multiple tabs
-- Run the statement under the cursor, the selection, or the whole tab; stop a running statement
+- Run the statement under the cursor, the selection, or the whole tab; stop a running statement. The
+  definition of a stored procedure, function, trigger or event runs as one statement, with or without a
+  `DELIMITER` line
+- A mark on a tab that has a transaction open, and a question before closing it rolls the transaction back
 - A results grid that stays fast on large results, with resizable columns and keyboard navigation
 - A value panel that formats JSON, including JSON stored in text columns, without altering numbers
 - Edit cells, add rows and delete rows in the results grid. Changes are staged, you see the exact SQL before
   it runs, and a save is one transaction that takes effect only if every statement changes exactly one row.
-  A new row sets only the cells you fill in, and leaves the rest to the table's defaults
+  A new row sets only the cells you fill in, and leaves the rest to the table's defaults. Tables whose
+  engine cannot undo a change, such as MyISAM, are read-only in the grid
 - Filter and sort a table without rewriting the query: type a condition and an order above the grid, click a
   column header, or right-click a cell to keep or leave out its value. The database does the filtering, and
   the editor shows the statement that ran
