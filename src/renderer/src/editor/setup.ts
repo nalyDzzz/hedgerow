@@ -120,18 +120,23 @@ export const appearance: Extension = [theme, syntaxHighlighting(highlightStyle)]
 
 /** The statements of a parsed text. Kept per parse, so moving the cursor does not read the text again. */
 const statementsOf = new WeakMap<SqlTree, StatementRange[]>()
+/** Past this many characters the statement under the cursor is no longer marked at every keystroke. */
+const MARK_UP_TO = 2_000_000
 
 /**
  * The statement Run would execute for a cursor at `pos`, as `statementAt`
  * picks it, or null when the cursor is on none.
  *
  * A long text is parsed a piece at a time. Marking the statement makes do with
- * what has been parsed so far. Running one does not: with `whole` the text is
- * parsed to its end first, because a statement cut off where the parser happens
- * to have stopped is not the statement that was written.
+ * what has been parsed so far, and a very long text is not marked at all.
+ * Running one does not make do: with `whole` the text is parsed to its end
+ * first, because a statement cut off where the parser happens to have stopped
+ * is not the statement that was written.
  */
 export function statementRangeAt(state: EditorState, pos: number, whole = false): StatementRange | null {
   const length = state.doc.length
+  // Finding the statements reads the whole text. For a very long one that is done when Run asks, not while typing.
+  if (!whole && length > MARK_UP_TO) return null
   const tree = (ensureSyntaxTree(state, length, whole ? 30_000 : 200) ?? syntaxTree(state)) as SqlTree
   if (whole && tree.length < length) return null
   let ranges = statementsOf.get(tree)
