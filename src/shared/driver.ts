@@ -196,7 +196,7 @@ export interface EditRequest {
   changes: RowChange[]
 }
 
-/** The outcome of saving changes. A save that is not `ok` changed nothing. */
+/** The outcome of saving changes. A save that is not `ok` changed nothing, unless it says otherwise in `notUndone`. */
 export type SaveResult =
   | {
       ok: true
@@ -216,6 +216,12 @@ export type SaveResult =
       statement?: number
       /** True when the connection failed. The session cannot be used again. */
       connectionLost?: boolean
+      /**
+       * Present when it cannot be said that nothing was saved: the server could
+       * not undo everything, or the connection failed before it answered the
+       * commit. Says which, in a sentence fit to show a person as-is.
+       */
+      notUndone?: string
       durationMs: number
     }
 
@@ -271,7 +277,8 @@ export interface DriverSession {
   /**
    * Runs statements from `planEdits` in one transaction. Commits only if every
    * statement changes or adds exactly one row and none raises a warning;
-   * otherwise everything is rolled back. Never rejects for SQL errors.
+   * otherwise everything is rolled back, and if the server cannot roll all of
+   * it back the result says so. Never rejects for SQL errors.
    */
   applyEdits(statements: string[]): Promise<SaveResult>
   /** Ends the session. A statement it is still running is interrupted first, not left to finish unseen. */
