@@ -181,6 +181,58 @@ describe.skipIf(!port)('mysql driver', () => {
     expect(after.rows).toEqual([[1]])
   })
 
+  describe('stopping statements', () => {
+    /** How many KILL statements the server has been sent, by anyone. */
+    async function kills() {
+      const status = rows(await session.execute("SHOW GLOBAL STATUS LIKE 'Com_kill'", options))
+      return Number(status.rows[0][1])
+    }
+
+    beforeAll(async () => {
+      await session.setDatabase(DB)
+      // More rows than a result may hold, by a few.
+      await session.execute('SET SESSION cte_max_recursion_depth = 200000', options)
+      await session.execute('CREATE TABLE plenty (n INT PRIMARY KEY)', options)
+      await session.execute(
+        `INSERT INTO plenty
+         WITH RECURSIVE counted (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM counted WHERE n < 100050)
+         SELECT n FROM counted`,
+        options,
+      )
+    })
+
+    it('does not interrupt a statement that the largest row limit already ended', async () => {
+      const before = await kills()
+      const result = rows(await session.execute('SELECT n FROM plenty', { rowLimit: 100_000 }))
+      expect(result.rows).toHaveLength(100_000)
+      expect(result.truncated).toBe(true)
+      expect(await kills()).toBe(before)
+      // A kill sent for it used to arrive after it had ended, and stop the key lookup that follows.
+      expect(result.editing).toMatchObject({ key: [0] })
+    })
+
+    it('interrupts a statement that returns more rows than a result may hold', async () => {
+      const result = rows(await session.execute('SELECT n FROM plenty LIMIT 200000', options))
+      expect(result.rows).toHaveLength(100_000)
+      expect(result.truncated).toBe(true)
+      expect(result.editing).toMatchObject({ key: [0] })
+      expect(rows(await session.execute('SELECT 1 AS one', options)).rows).toEqual([[1]])
+    })
+
+    it('does not let a stop that comes too late reach the next statement', async () => {
+      // The stop is asked for while the first statement runs, which ends before the kill can be sent.
+      const first = session.execute('SELECT 1 AS one', options)
+      const stop = session.cancel()
+      await first
+      const started = Date.now()
+      const next = rows(await session.execute('SELECT SLEEP(0.6)', options))
+      await stop
+      // An interrupted SLEEP returns 1, and at once.
+      expect(next.rows).toEqual([[0]])
+      expect(Date.now() - started).toBeGreaterThanOrEqual(550)
+    })
+  })
+
   it('explains a refused connection in plain words', async () => {
     await expect(mysqlDriver.connect({ ...params, port: 1 })).rejects.toThrow(/Nothing is listening at/)
   })

@@ -35,6 +35,8 @@ import {
 /**
  * Upper bound on rows held for one statement, whatever LIMIT it asks for.
  * Past this the statement is interrupted and the result marked truncated.
+ * The largest row limit is one row above it, because a limit asks for one row
+ * more than it shows.
  */
 const HARD_ROW_CAP = 100_000
 
@@ -332,8 +334,14 @@ class MysqlSession implements DriverSession {
   /** The SQL_SELECT_LIMIT this session currently has; null is the server default. */
   private selectLimit: number | null = null
   private running = false
+  /** Counts the statements this session has started, so a kill can tell the one it was meant for. */
+  private started = 0
   /** Set by cancel() so a statement that has not reached the server yet is skipped. */
   private cancelRequested = false
+  /** Kills that are on their way to the server. */
+  private readonly kills = new Set<Promise<void>>()
+  /** True once a kill was sent, until a statement that does nothing has been run to take it. */
+  private strayKill = false
   private closed = false
 
   constructor(
@@ -400,16 +408,20 @@ class MysqlSession implements DriverSession {
     const elapsed = () => Math.round((performance.now() - started) * 10) / 10
     try {
       this.assertOpen()
-      this.running = true
-      this.cancelRequested = false
+      this.begin()
+      await this.settle()
       // One extra row tells us whether the result was cut short.
       await this.setSelectLimit(options.rowLimit + 1)
       if (this.cancelRequested) {
         throw Object.assign(new Error('Query execution was interrupted'), { code: 'ER_QUERY_INTERRUPTED' })
       }
-      const outcome = await this.runStatement(sql)
+      // The limit already ends the result one row past what is shown. Only a statement that
+      // sets its own limit, or returns rows some other way, can run past that.
+      const outcome = await this.runStatement(sql, Math.max(HARD_ROW_CAP, options.rowLimit + 1))
       const durationMs = elapsed()
       this.running = false
+      // What follows are our own questions, and a kill sent for the statement must not reach them.
+      await this.settle()
 
       if (/^\s*use\s/i.test(sql)) await this.refreshDatabase()
 
@@ -444,13 +456,49 @@ class MysqlSession implements DriverSession {
     this.cancelRequested = true
     const threadId = this.connection.threadId
     if (threadId == null) return
+    const kill = this.kill(this.started, Number(threadId))
+    const pending = kill.then(
+      () => {},
+      () => {},
+    )
+    this.kills.add(pending)
+    void pending.then(() => this.kills.delete(pending))
+    await kill
+  }
+
+  /** Interrupts statement number `target` of this session, if it is still the one running. */
+  private async kill(target: number, threadId: number): Promise<void> {
     // KILL QUERY has to come from another connection; this one is busy.
     const side = await openConnection({ ...this.params, database: undefined })
     try {
-      await queryRows(side, `KILL QUERY ${Number(threadId)}`)
+      // Opening that connection took a moment. If the statement ended meanwhile, a kill
+      // sent now would find nothing, or whatever this session runs next.
+      if (!this.running || this.started !== target || this.closed) return
+      this.strayKill = true
+      await queryRows(side, `KILL QUERY ${threadId}`)
     } finally {
       side.destroy()
     }
+  }
+
+  /** Marks the start of a statement that cancel() can interrupt. */
+  private begin(): void {
+    this.running = true
+    this.started += 1
+    this.cancelRequested = false
+  }
+
+  /**
+   * Keeps a kill meant for one statement from reaching another. A kill travels on
+   * a connection of its own, so it can arrive after its statement has ended, and
+   * some servers then hold it for whatever this connection runs next. So a kill
+   * that is on its way is waited for, and a statement that does nothing is run to take it.
+   */
+  private async settle(): Promise<void> {
+    while (this.kills.size > 0) await Promise.all(this.kills)
+    if (!this.strayKill) return
+    this.strayKill = false
+    await queryRows(this.connection, 'DO 0').catch(() => {})
   }
 
   async tableQuery(table: TableRef, view?: TableView): Promise<string> {
@@ -474,8 +522,8 @@ class MysqlSession implements DriverSession {
     const insertIds: (string | null)[] = []
     try {
       this.assertOpen()
-      this.running = true
-      this.cancelRequested = false
+      this.begin()
+      await this.settle()
 
       // START TRANSACTION would quietly commit a transaction this session already has open.
       const before = await runCommand(this.connection, 'DO 0')
@@ -520,10 +568,20 @@ class MysqlSession implements DriverSession {
         insertIds.push(adds ? generatedId(header) : null)
       }
       at = undefined
+      // From here a kill could only land on the COMMIT. So none is sent any more, one that is
+      // on its way is waited for, and a save that was stopped in time is not committed.
+      this.running = false
+      await this.settle()
+      if (this.cancelRequested) {
+        throw Object.assign(new Error('Query execution was interrupted'), { code: 'ER_QUERY_INTERRUPTED' })
+      }
       await runCommand(this.connection, 'COMMIT')
       inTransaction = false
       return { ok: true, durationMs: elapsed(), insertIds }
     } catch (error) {
+      // The same goes for the ROLLBACK: interrupted, it would leave the transaction open.
+      this.running = false
+      await this.settle()
       if (inTransaction) await queryRows(this.connection, 'ROLLBACK').catch(() => {})
       const failure = error as MysqlError
       return {
@@ -557,6 +615,7 @@ class MysqlSession implements DriverSession {
   private async sqlMode(): Promise<SqlMode> {
     this.assertOpen()
     try {
+      await this.settle()
       const rows = await queryRows(this.connection, 'SELECT @@SESSION.sql_mode')
       return { backslashEscapes: !String(rows[0]?.[0] ?? '').toUpperCase().includes('NO_BACKSLASH_ESCAPES') }
     } catch (error) {
@@ -572,6 +631,7 @@ class MysqlSession implements DriverSession {
   private async internalQuery(sql: string, values: unknown[] = []): Promise<unknown[][]> {
     this.assertOpen()
     try {
+      await this.settle()
       await this.setSelectLimit(null)
       return await queryRows(this.connection, sql, values)
     } catch (error) {
@@ -808,9 +868,10 @@ class MysqlSession implements DriverSession {
 
   /**
    * Streams one statement. Only the first result set is kept; a stored
-   * procedure that returns several still runs to completion.
+   * procedure that returns several still runs to completion. Past `cap` rows
+   * the statement is interrupted.
    */
-  private runStatement(sql: string): Promise<Outcome> {
+  private runStatement(sql: string, cap: number): Promise<Outcome> {
     return new Promise((resolve, reject) => {
       let columns: ResultColumn[] | null = null
       let captured: FieldLike[] = []
@@ -843,7 +904,7 @@ class MysqlSession implements DriverSession {
         if (typeof index === 'number') setIndex = index
         if (Array.isArray(row)) {
           if (setIndex !== capturedSet) return
-          if (rows.length >= HARD_ROW_CAP) {
+          if (rows.length >= cap) {
             truncated = true
             if (!interruptedAtCap) {
               interruptedAtCap = true
