@@ -96,7 +96,9 @@ export function SaveChangesDialog({
               <div className="mt-3 flex items-start gap-2 text-destructive" role="alert">
                 <CircleAlert className="mt-0.5 size-4 shrink-0" />
                 <div className="min-w-0 text-[12.5px]">
-                  <p className="font-medium">Nothing was saved.</p>
+                  <p className="font-medium">
+                    {failure.notUndone ? 'The save was stopped, but not all of it was undone.' : 'Nothing was saved.'}
+                  </p>
                   <p className="selectable mt-0.5">
                     {failure.statement !== undefined &&
                       statements.length > 1 &&
@@ -104,6 +106,7 @@ export function SaveChangesDialog({
                     {failure.message}
                     {failure.connectionLost && ' The connection to the server was lost. Try again to reconnect.'}
                   </p>
+                  {failure.notUndone && <p className="selectable mt-1.5 text-foreground">{failure.notUndone}</p>}
                   {failure.statement !== undefined && statements.length > 1 && (
                     <pre className="selectable mt-1.5 max-h-20 overflow-auto whitespace-pre-wrap break-words rounded-md border border-destructive/30 p-2 font-mono text-[11.5px] text-foreground">
                       {statements[failure.statement]}
