@@ -7,7 +7,7 @@ import {
   type Completion,
 } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { MySQL, sql, type SQLNamespace } from '@codemirror/lang-sql'
+import { sql, type SQLNamespace } from '@codemirror/lang-sql'
 import { bracketMatching, indentOnInput } from '@codemirror/language'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
 import { Annotation, Compartment, EditorState, Prec, Transaction } from '@codemirror/state'
@@ -20,7 +20,7 @@ import {
   lineNumbers,
   placeholder,
 } from '@codemirror/view'
-import { splitStatements } from '@/lib/sql'
+import { MYSQL, splitStatements } from '@/lib/sql'
 import { MOD } from '@/lib/utils'
 import { onStatementWritten, useStore, type SchemaState, type Tab } from '@/store'
 import { activeStatement, appearance, statementRangeAt } from './setup'
@@ -73,8 +73,11 @@ export function runCurrentStatement(): boolean {
     run(splitStatements(state.sliceDoc(selection.from, selection.to)))
     return true
   }
-  const range = statementRangeAt(state, selection.head)
-  if (range) run(splitStatements(state.sliceDoc(range.from, range.to)))
+  // The statement as it was found, not split again: on its own it would be read without
+  // the DELIMITER line that may stand above it.
+  const range = statementRangeAt(state, selection.head, true)
+  const statement = range ? state.sliceDoc(range.from, range.to).trim() : ''
+  if (statement) run([statement])
   return true
 }
 
@@ -90,7 +93,7 @@ export function focusEditor(): void {
 
 function sqlSupport(schema: SQLNamespace, database: string | null) {
   return sql({
-    dialect: MySQL,
+    dialect: MYSQL,
     schema,
     defaultSchema: database ?? undefined,
     upperCaseKeywords: true,

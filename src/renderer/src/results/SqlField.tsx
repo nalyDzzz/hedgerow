@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react'
 import { autocompletion, closeBrackets, closeBracketsKeymap, type Completion } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { MySQL, sql } from '@codemirror/lang-sql'
+import { sql } from '@codemirror/lang-sql'
 import { bracketMatching } from '@codemirror/language'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
 import { EditorView, drawSelection, keymap, placeholder as placeholderText } from '@codemirror/view'
 import type { ColumnInfo } from '@shared/driver'
 import { appearance } from '@/editor/setup'
+import { MYSQL } from '@/lib/sql'
 
 /** One line high, and sized like the bar it sits in instead of like the editor. */
 const oneLine = Prec.highest(
@@ -26,7 +27,7 @@ function language(table: string, columns: ColumnInfo[]) {
     detail: column.dataType,
   }))
   // With the table as the default, its columns complete without being prefixed by its name.
-  return sql({ dialect: MySQL, schema: { [table]: completions }, defaultTable: table, upperCaseKeywords: true })
+  return sql({ dialect: MYSQL, schema: { [table]: completions }, defaultTable: table, upperCaseKeywords: true })
 }
 
 interface SqlFieldProps {
