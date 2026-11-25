@@ -722,7 +722,7 @@ class MysqlSession implements DriverSession {
   }
 
   private assertOpen(): void {
-    if (this.closed) throw new DriverError('The connection was closed. Reconnect to continue.', 'CLOSED')
+    if (this.closed) throw new DriverError('The connection to the server is closed.', 'CLOSED')
   }
 
   /** Runs one of our own queries, free of any row limit set for user statements. */
