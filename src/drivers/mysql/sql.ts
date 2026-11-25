@@ -279,6 +279,119 @@ export function editStatements({ columns, editing, changes }: EditRequest, mode:
   })
 }
 
+/** One piece of a statement, as far as finding a name in it needs. */
+interface Token {
+  /**
+   * A bare word, a name in backticks, text in double quotes (which is a name
+   * too under ANSI_QUOTES), a string in single quotes, or any other character.
+   */
+  kind: 'word' | 'name' | 'text' | 'string' | 'symbol'
+  /** A word or symbol as written. A quoted name or string without its quotes. */
+  text: string
+}
+
+const WORD = /[\w$\u0080-\uffff]+/y
+
+/**
+ * Takes a statement apart into words, quoted things and single characters.
+ * Comments and white space are left out, except that what a `/*! ... *\/`
+ * comment holds is kept: the server runs it.
+ */
+export function tokenize(sql: string, mode: SqlMode): Token[] {
+  const found: Token[] = []
+  let at = 0
+  while (at < sql.length) {
+    const char = sql[at]
+    if (/\s/.test(char)) {
+      at += 1
+    } else if (char === '#' || (sql.startsWith('--', at) && (at + 2 === sql.length || /\s/.test(sql[at + 2])))) {
+      const end = sql.indexOf('\n', at)
+      at = end < 0 ? sql.length : end + 1
+    } else if (sql.startsWith('/*!', at)) {
+      // Only the marker and the version number go. The end of the comment goes below.
+      at += 3
+      while (/\d/.test(sql[at] ?? '')) at += 1
+    } else if (sql.startsWith('/*', at)) {
+      const end = sql.indexOf('*/', at + 2)
+      at = end < 0 ? sql.length : end + 2
+    } else if (sql.startsWith('*/', at)) {
+      at += 2
+    } else if (char === "'" || char === '"' || char === '`') {
+      let text = ''
+      let end = at + 1
+      for (; end < sql.length; end++) {
+        const next = sql[end]
+        if (next === '\\' && char !== '`' && mode.backslashEscapes) {
+          text += sql[end + 1] ?? ''
+          end += 1
+        } else if (next === char) {
+          // Written twice, the quote is part of what it quotes.
+          if (sql[end + 1] !== char) break
+          text += char
+          end += 1
+        } else {
+          text += next
+        }
+      }
+      found.push({ kind: char === '`' ? 'name' : char === '"' ? 'text' : 'string', text })
+      at = end + 1
+    } else {
+      WORD.lastIndex = at
+      const word = WORD.exec(sql)
+      if (word) {
+        found.push({ kind: 'word', text: word[0] })
+        at += word[0].length
+      } else {
+        found.push({ kind: 'symbol', text: char })
+        at += 1
+      }
+    }
+  }
+  return found
+}
+
+/**
+ * True when a statement gives the name of a table to something else: a
+ * subquery in brackets, or a WITH clause. The server then reports what that
+ * returns as columns of the table, under whatever names it gave them, so
+ * `SELECT ref AS id ...` passes for the table's `id`. Nothing the server says
+ * about such a result tells it from the table read directly; only the statement does.
+ */
+export function givesNameAway(sql: string, name: string): boolean {
+  const wanted = name.toLowerCase()
+  // Read both ways a session may read a string: a quote that only one of them closes could hide the name.
+  return [true, false].some((backslashEscapes) => {
+    const list = tokenize(sql, { backslashEscapes })
+    const symbol = (at: number, text: string) => list[at]?.kind === 'symbol' && list[at].text === text
+    const word = (at: number, text: string) => list[at]?.kind === 'word' && list[at].text.toUpperCase() === text
+    /** Where the bracket opened at `at` closes, or past the end if it never does. */
+    const closing = (at: number) => {
+      let depth = 0
+      for (let index = at; index < list.length; index++) {
+        if (symbol(index, '(')) depth += 1
+        else if (symbol(index, ')') && --depth === 0) return index
+      }
+      return list.length
+    }
+
+    return list.some((token, at) => {
+      if (token.kind === 'symbol' || token.kind === 'string' || token.text.toLowerCase() !== wanted) return false
+      // `shop.people` is the table, and `people.id` one of its columns.
+      if (symbol(at - 1, '.') || symbol(at + 1, '.')) return false
+      // (subquery) people, and (subquery) AS people
+      if (symbol(at - 1, ')') || (word(at - 1, 'AS') && symbol(at - 2, ')'))) return true
+      // WITH people AS (subquery)
+      if (word(at + 1, 'AS') && symbol(at + 2, '(')) return true
+      // WITH people (id, name) AS (subquery)
+      if (symbol(at + 1, '(')) {
+        const end = closing(at + 1)
+        return word(end + 1, 'AS') && symbol(end + 2, '(')
+      }
+      return false
+    })
+  })
+}
+
 /** True for a statement `editStatements` writes. A save runs nothing else. */
 export function isEditStatement(sql: string): boolean {
   return /^(?:UPDATE|DELETE FROM|INSERT INTO) `/.test(sql)

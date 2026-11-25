@@ -24,6 +24,7 @@ import { DriverError } from '../error'
 import {
   changedView,
   editStatements,
+  givesNameAway,
   isEditStatement,
   isInsert,
   isQuery,
@@ -739,6 +740,15 @@ class MysqlSession implements DriverSession {
         readOnly:
           `The query reads \`${table.table}\` under another name (\`${alias}\`): an alias, a view or a subquery. ` +
           'Rows can be edited when the table is read under its own name.',
+      }
+    }
+    // Its own name is not proof either. A subquery or a WITH clause can be given the table's
+    // name, and the server then passes off what that returns as the table's columns.
+    if (givesNameAway(sql, table.table)) {
+      return {
+        readOnly:
+          `The query gives the name \`${table.table}\` to a subquery or a WITH clause, so these may not be the ` +
+          "table's rows as it stores them. Rows can be edited when the table is read directly.",
       }
     }
 

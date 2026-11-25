@@ -6,6 +6,7 @@ import {
   changedView,
   columnTest,
   editStatements,
+  givesNameAway,
   isEditStatement,
   isInsert,
   isQuery,
@@ -14,6 +15,7 @@ import {
   quoteIdentifier,
   quoteString,
   tableQuery,
+  tokenize,
 } from './sql'
 
 const usual = { backslashEscapes: true }
@@ -443,6 +445,72 @@ describe('telling a planned change from other statements', () => {
     expect(isEditStatement('DROP TABLE items')).toBe(false)
     expect(isEditStatement('INSERT IGNORE INTO `items` () VALUES ()')).toBe(false)
     expect(isEditStatement('REPLACE INTO `items` () VALUES ()')).toBe(false)
+  })
+})
+
+describe('taking a statement apart', () => {
+  const texts = (sql: string, mode = usual) => tokenize(sql, mode).map((token) => token.text)
+
+  it('leaves out comments and white space', () => {
+    expect(texts('SELECT a, -- one\n b # two\n FROM /* three */ t')).toEqual(['SELECT', 'a', ',', 'b', 'FROM', 't'])
+  })
+
+  it('reads two minus signs with nothing after them as arithmetic', () => {
+    expect(texts('SELECT 5--3')).toEqual(['SELECT', '5', '-', '-', '3'])
+  })
+
+  it('keeps what a comment for the server holds', () => {
+    expect(texts('SELECT 1 /*!50000 AS people */ FROM t')).toEqual(['SELECT', '1', 'AS', 'people', 'FROM', 't'])
+  })
+
+  it('tells the three kinds of quote apart and takes the quotes off', () => {
+    expect(tokenize('`a``b` "c""d" \'e\'\'f\'', usual)).toEqual([
+      { kind: 'name', text: 'a`b' },
+      { kind: 'text', text: 'c"d' },
+      { kind: 'string', text: "e'f" },
+    ])
+  })
+
+  it('reads a backslash the way the session does', () => {
+    const sql = "SELECT 'it\\'s', x"
+    expect(texts(sql, usual)).toEqual(['SELECT', "it's", ',', 'x'])
+    // Taken literally, the backslash ends nothing, so the string ends at the second quote.
+    expect(texts(sql, literalBackslash)).toEqual(['SELECT', 'it\\', 's', ', x'])
+  })
+})
+
+describe('a table name given to something else', () => {
+  it('is a subquery in brackets that is called by it', () => {
+    expect(givesNameAway('SELECT * FROM (SELECT ref AS id FROM people) AS people', 'people')).toBe(true)
+    expect(givesNameAway('SELECT * FROM (SELECT ref AS id FROM people) people', 'people')).toBe(true)
+    expect(givesNameAway('SELECT * FROM (SELECT ref AS id FROM people) AS `People`', 'people')).toBe(true)
+    // Under ANSI_QUOTES double quotes hold a name.
+    expect(givesNameAway('SELECT * FROM (SELECT ref AS id FROM people) AS "people"', 'people')).toBe(true)
+  })
+
+  it('is a WITH clause that is called by it', () => {
+    expect(givesNameAway('WITH people AS (SELECT ref AS id FROM people) SELECT * FROM people', 'people')).toBe(true)
+    expect(givesNameAway('WITH a AS (SELECT 1), people AS (SELECT 2) SELECT * FROM people', 'people')).toBe(true)
+    expect(givesNameAway('WITH RECURSIVE people (id, name) AS (SELECT 1, 2) SELECT * FROM people', 'people')).toBe(true)
+  })
+
+  it('is not the table read directly, however often it is named', () => {
+    expect(givesNameAway('SELECT * FROM people', 'people')).toBe(false)
+    expect(givesNameAway('SELECT people.* FROM shop.people WHERE people.id > 1', 'people')).toBe(false)
+    expect(givesNameAway('SELECT * FROM people WHERE id IN (SELECT boss FROM people)', 'people')).toBe(false)
+    expect(givesNameAway('SELECT * FROM people AS people JOIN orders o ON (o.person = people.id)', 'people')).toBe(false)
+    expect(givesNameAway('WITH others AS (SELECT 1) SELECT * FROM people', 'people')).toBe(false)
+  })
+
+  it('is not a name that is only mentioned in a string or a comment', () => {
+    expect(givesNameAway("SELECT * FROM people WHERE note = ') AS people'", 'people')).toBe(false)
+    expect(givesNameAway('SELECT * FROM people -- ) AS people', 'people')).toBe(false)
+  })
+
+  it('is found however the session reads a backslash', () => {
+    // Read with backslash escapes, the string runs on and hides the alias. The session may not read it so.
+    const sql = "SELECT * FROM (SELECT ref AS id, '\\' AS x FROM people) AS people -- '"
+    expect(givesNameAway(sql, 'people')).toBe(true)
   })
 })
 
