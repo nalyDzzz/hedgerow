@@ -53,6 +53,23 @@ const FLAG_PART_OF_KEY = 16384
 const ER_QUERY_INTERRUPTED = 1317
 /** Bit of the status the server sends with every answer: a transaction is open. */
 const STATUS_IN_TRANSACTION = 1
+/**
+ * Storage engines that keep no transactions, in lower case. What is written to
+ * one of their tables stays written, so a save could not be all or nothing.
+ */
+const NO_ROLLBACK = new Set([
+  'myisam',
+  'aria',
+  'memory',
+  'heap',
+  'csv',
+  'archive',
+  'mrg_myisam',
+  'merge',
+  'federated',
+  'blackhole',
+  'connect',
+])
 
 /** MySQL protocol column type codes mapped to a display name and a kind. */
 const COLUMN_TYPES: Record<number, [dbType: string, kind: ColumnKind]> = {
@@ -129,6 +146,8 @@ interface TableShape {
   required: string[]
   /** Unique indexes. A part with no column is an expression. */
   keys: { name: string; parts: { column: string | null; nullable: boolean }[] }[]
+  /** The storage engine that holds the table, when the server names one. */
+  engine: string | null
 }
 
 interface MysqlError extends Error {
@@ -525,6 +544,8 @@ class MysqlSession implements DriverSession {
     const started = performance.now()
     const elapsed = () => Math.round((performance.now() - started) * 10) / 10
     let inTransaction = false
+    /** True from the moment COMMIT is sent until the server has answered it. */
+    let committing = false
     /** The statement being run, while one is. */
     let at: number | undefined
     const insertIds: (string | null)[] = []
@@ -583,26 +604,54 @@ class MysqlSession implements DriverSession {
       if (this.cancelRequested) {
         throw Object.assign(new Error('Query execution was interrupted'), { code: 'ER_QUERY_INTERRUPTED' })
       }
+      committing = true
       await runCommand(this.connection, 'COMMIT')
+      committing = false
       inTransaction = false
       return { ok: true, durationMs: elapsed(), insertIds }
     } catch (error) {
+      const failure = error as MysqlError
+      if (failure.fatal) this.closed = true
       // The same goes for the ROLLBACK: interrupted, it would leave the transaction open.
       this.running = false
       await this.settle()
-      if (inTransaction) await queryRows(this.connection, 'ROLLBACK').catch(() => {})
-      const failure = error as MysqlError
-      if (failure.fatal) this.closed = true
+      let notUndone: string | undefined
+      if (committing && this.closed) {
+        notUndone =
+          'The connection failed while the changes were being committed, so it is not known whether they were ' +
+          'stored. Run the statement again to see what the table holds now.'
+      } else if (inTransaction) {
+        notUndone = await this.rollBack()
+      }
       return {
         ok: false,
         message: failure.sqlMessage || failure.message || 'The save failed.',
         code: failure.code,
         statement: at,
         ...(this.closed ? { connectionLost: true } : {}),
+        ...(notUndone ? { notUndone } : {}),
         durationMs: elapsed(),
       }
     } finally {
       this.running = false
+    }
+  }
+
+  /**
+   * Takes back what a save has done so far. Gives the server's words when it
+   * could not take all of it back: a table that keeps no transactions, written
+   * to by the statements or by a trigger they set off, holds on to what it got.
+   */
+  private async rollBack(): Promise<string | undefined> {
+    try {
+      const undone = await runCommand(this.connection, 'ROLLBACK')
+      if (!undone.warningStatus) return undefined
+      const warnings = await queryRows(this.connection, 'SHOW WARNINGS LIMIT 3')
+      const said = warnings.map((warning) => String(warning[2])).join(' ')
+      return `The server could not undo all of it. It said: ${said || 'nothing more.'}`
+    } catch {
+      // The connection is gone, and the server rolls back whatever a connection leaves open.
+      return undefined
     }
   }
 
@@ -701,6 +750,13 @@ class MysqlSession implements DriverSession {
     }
     if (!stored.every((index) => shape.columns.has(columns[index].source!.column.toLowerCase()))) {
       return { readOnly: 'These values are not read straight from a table.' }
+    }
+    if (shape.engine && NO_ROLLBACK.has(shape.engine.toLowerCase())) {
+      return {
+        readOnly:
+          `\`${table.table}\` is a ${shape.engine} table, and ${shape.engine} cannot undo a change. A save that ` +
+          'stopped part way would leave some of it behind, so its rows are changed with statements instead.',
+      }
     }
 
     const find = (name: string) =>
@@ -824,11 +880,11 @@ class MysqlSession implements DriverSession {
     }
   }
 
-  /** One round trip for both lists. A row with no index name describes a column. */
+  /** One round trip for everything. A row with no index name describes a column, and names the table's engine. */
   private async tableShape(table: TableRef): Promise<TableShape> {
     const rows = await queryRows(
       this.connection,
-      `(SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NULLABLE
+      `(SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NULLABLE, NULL
           FROM information_schema.STATISTICS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND NON_UNIQUE = 0)
        UNION ALL
@@ -836,20 +892,30 @@ class MysqlSession implements DriverSession {
                CASE WHEN GENERATION_EXPRESSION <> '' THEN 'GENERATED'
                     WHEN EXTRA LIKE '%auto_increment%' THEN 'AUTO'
                     WHEN IS_NULLABLE = 'NO' AND COLUMN_DEFAULT IS NULL THEN 'REQUIRED'
-                    ELSE '' END
+                    ELSE '' END,
+               (SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?)
           FROM information_schema.COLUMNS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?)
        LIMIT 100000`,
-      [table.database, table.table, table.database, table.table],
+      [table.database, table.table, table.database, table.table, table.database, table.table],
     )
 
-    const shape: TableShape = { columns: new Set(), generated: new Set(), auto: new Set(), required: [], keys: [] }
+    const shape: TableShape = {
+      columns: new Set(),
+      generated: new Set(),
+      auto: new Set(),
+      required: [],
+      keys: [],
+      engine: null,
+    }
     const parts = new Map<string, { position: number; column: string | null; nullable: boolean }[]>()
     const required: { name: string; position: number }[] = []
-    for (const [index, position, column, note] of rows) {
+    for (const [index, position, column, note, engine] of rows) {
       if (index === null) {
         const name = String(column).toLowerCase()
         shape.columns.add(name)
+        // Every column row carries it, and says the same.
+        if (typeof engine === 'string') shape.engine = engine
         if (note === 'GENERATED') shape.generated.add(name)
         else if (note === 'AUTO') shape.auto.add(name)
         else if (note === 'REQUIRED') required.push({ name: String(column), position: Number(position) })

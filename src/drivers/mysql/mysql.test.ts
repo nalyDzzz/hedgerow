@@ -441,6 +441,14 @@ describe.skipIf(!port)('mysql driver', () => {
       expect((await select('SELECT * FROM files')).editing).toMatchObject({ key: [1] })
     })
 
+    it('leaves a table read-only when its engine cannot undo a change', async () => {
+      await run('CREATE TABLE ledger (id INT PRIMARY KEY, name VARCHAR(5) NOT NULL) ENGINE = MyISAM')
+      await run("INSERT INTO ledger VALUES (1, 'a')")
+      const result = await select('SELECT * FROM ledger')
+      expect(result.editing).toBeUndefined()
+      expect(result.readOnly).toMatch(/`ledger` is a MyISAM table, and MyISAM cannot undo a change/)
+    })
+
     it('writes the statement that opens a table', async () => {
       expect(await session.tableQuery({ database: DB, table: 'we`ird' })).toBe(`SELECT * FROM \`${DB}\`.\`we\`\`ird\``)
     })
@@ -616,6 +624,34 @@ describe.skipIf(!port)('mysql driver', () => {
       } finally {
         await run('SET SESSION sql_mode = DEFAULT')
       }
+    })
+
+    it('says so when the server could not undo everything a stopped save had done', async () => {
+      // The table itself can be rolled back. The journal its trigger writes to cannot.
+      await run('CREATE TABLE journal (note VARCHAR(40)) ENGINE = MyISAM')
+      await run('CREATE TABLE guarded (id INT PRIMARY KEY, name VARCHAR(5) NOT NULL)')
+      await run("INSERT INTO guarded VALUES (1, 'a'), (2, 'b')")
+      await run(
+        `CREATE TRIGGER guarded_journal AFTER UPDATE ON guarded
+         FOR EACH ROW INSERT INTO journal VALUES (CONCAT('changed ', NEW.id))`,
+      )
+      const result = await select('SELECT * FROM guarded')
+      const statements = await session.planEdits(
+        request(result, [
+          { kind: 'update', key: [1], set: [{ column: 1, value: 'fine' }] },
+          { kind: 'update', key: [2], set: [{ column: 1, value: 'far too long' }] },
+        ]),
+      )
+      const saved = await session.applyEdits(statements)
+      expect(saved).toMatchObject({ ok: false, code: 'ER_DATA_TOO_LONG', statement: 1 })
+      expect(saved.ok === false && saved.notUndone).toMatch(/could not undo all of it/)
+      expect((await select('SELECT name FROM guarded ORDER BY id')).rows).toEqual([['a'], ['b']])
+      expect((await select('SELECT note FROM journal')).rows).toEqual([['changed 1']])
+
+      // A save that is undone whole says nothing of the kind.
+      const whole = await session.applyEdits([`UPDATE ${TABLE} SET \`email\` = NULL WHERE \`id\` = 1`])
+      expect(whole).toMatchObject({ ok: false })
+      expect(whole).not.toHaveProperty('notUndone')
     })
 
     it('counts a row that already holds the new value as that one row', async () => {
