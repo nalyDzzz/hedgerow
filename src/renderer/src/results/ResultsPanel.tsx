@@ -23,17 +23,26 @@ function Statement({ sql }: { sql: string }) {
 
 function ErrorView({ sql, result }: { sql: string; result: ErrorResult }) {
   const stopped = result.code === 'ER_QUERY_INTERRUPTED'
+  // The connection failed, not the statement. What matters then is what was lost and how to carry on.
+  const lost = Boolean(result.connectionLost) && !stopped
   return (
     <div className="h-full overflow-auto p-4">
       <div className={cn('flex items-start gap-2', stopped ? 'text-muted-foreground' : 'text-destructive')}>
         <CircleAlert className="mt-0.5 size-4 shrink-0" />
         <div className="min-w-0">
-          <p className="selectable text-[13px] font-medium">{stopped ? 'Stopped before it finished.' : result.message}</p>
+          <p className="selectable text-[13px] font-medium">
+            {stopped ? 'Stopped before it finished.' : lost ? CONNECTION_LOST : result.message}
+          </p>
+          {lost && (
+            <p className="mt-1 max-w-[70ch] text-[12.5px] text-foreground">
+              {result.code === 'CLOSED'
+                ? 'The statement was not run. Run it again to reconnect.'
+                : 'Run the statement again to reconnect. Whether it ran before the connection failed is not known.'}
+            </p>
+          )}
+          {lost && <p className="selectable mt-1 text-[12px] opacity-80">{result.message}</p>}
           {result.code && !stopped && (
             <p className="selectable mt-0.5 font-mono text-[11px] opacity-80">{result.code}</p>
-          )}
-          {result.connectionLost && !stopped && (
-            <p className="mt-1.5 max-w-[70ch] text-[12.5px] text-foreground">{CONNECTION_LOST} Run it again to reconnect.</p>
           )}
         </div>
       </div>
