@@ -130,6 +130,11 @@ export interface ErrorResult {
   message: string
   /** Driver-specific code, e.g. `ER_NO_SUCH_TABLE`. */
   code?: string
+  /**
+   * True when it was the connection that failed, not the statement. The session
+   * cannot be used again, and whatever it had open on the server is gone with it.
+   */
+  connectionLost?: boolean
   durationMs: number
 }
 
@@ -209,6 +214,8 @@ export type SaveResult =
       code?: string
       /** Index of the statement that stopped the save, when one did. */
       statement?: number
+      /** True when the connection failed. The session cannot be used again. */
+      connectionLost?: boolean
       durationMs: number
     }
 
@@ -230,13 +237,18 @@ export interface DriverSession {
   readonly serverVersion: string
   /** Currently selected database, if any. */
   readonly database: string | null
+  /** False once the connection has failed or the session was closed. Nothing can be run on it again. */
+  readonly usable: boolean
   listDatabases(): Promise<string[]>
   /** Tables and views of one database, with their columns. */
   describeDatabase(database: string): Promise<TableInfo[]>
   setDatabase(database: string): Promise<void>
   /** Runs exactly one statement. Never rejects for SQL errors; returns an `ErrorResult`. */
   execute(sql: string, options: ExecuteOptions): Promise<StatementResult>
-  /** Interrupts the statement that is running, if any. The session stays usable. */
+  /**
+   * Interrupts the statement that is running, if any. The session stays usable,
+   * and a statement that starts afterwards is never the one interrupted.
+   */
   cancel(): Promise<void>
   /**
    * The statement that reads the rows of a table, with names quoted the way
@@ -262,6 +274,7 @@ export interface DriverSession {
    * otherwise everything is rolled back. Never rejects for SQL errors.
    */
   applyEdits(statements: string[]): Promise<SaveResult>
+  /** Ends the session. A statement it is still running is interrupted first, not left to finish unseen. */
   close(): Promise<void>
 }
 

@@ -135,6 +135,8 @@ interface MysqlError extends Error {
   code?: string
   errno?: number
   sqlMessage?: string
+  /** Set when the connection itself failed and cannot be used again. */
+  fatal?: boolean
 }
 
 function toColumn(field: FieldLike): ResultColumn {
@@ -360,6 +362,10 @@ class MysqlSession implements DriverSession {
     return this.currentDatabase
   }
 
+  get usable(): boolean {
+    return !this.closed
+  }
+
   async listDatabases(): Promise<string[]> {
     const rows = await this.internalQuery('SHOW DATABASES')
     return rows.map((row) => String(row[0]))
@@ -441,10 +447,12 @@ class MysqlSession implements DriverSession {
     } catch (error) {
       this.running = false
       const failure = error as MysqlError
+      if (failure.fatal) this.closed = true
       return {
         kind: 'error',
         message: failure.sqlMessage || failure.message || 'The statement failed.',
         code: failure.code,
+        ...(this.closed ? { connectionLost: true } : {}),
         durationMs: elapsed(),
         database: this.currentDatabase,
       }
@@ -584,11 +592,13 @@ class MysqlSession implements DriverSession {
       await this.settle()
       if (inTransaction) await queryRows(this.connection, 'ROLLBACK').catch(() => {})
       const failure = error as MysqlError
+      if (failure.fatal) this.closed = true
       return {
         ok: false,
         message: failure.sqlMessage || failure.message || 'The save failed.',
         code: failure.code,
         statement: at,
+        ...(this.closed ? { connectionLost: true } : {}),
         durationMs: elapsed(),
       }
     } finally {
@@ -598,6 +608,8 @@ class MysqlSession implements DriverSession {
 
   async close(): Promise<void> {
     if (this.closed) return
+    // Left running, a statement would carry on and commit on the server with nobody there to see it.
+    if (this.running) await this.cancel().catch(() => {})
     this.closed = true
     await new Promise<void>((resolve) => {
       const giveUp = setTimeout(() => {

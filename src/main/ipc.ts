@@ -47,6 +47,7 @@ export function registerIpc({ store, host, window }: Context): void {
         return host.call('open', driver, { ...params, database: database ?? params.database })
       },
       close: (sessionId) => host.call('close', sessionId),
+      usable: (sessionId) => host.call('usable', sessionId),
       listDatabases: (sessionId) => host.call('listDatabases', sessionId),
       describeDatabase: (sessionId, database) => host.call('describeDatabase', sessionId, database),
       setDatabase: (sessionId, database) => host.call('setDatabase', sessionId, database),

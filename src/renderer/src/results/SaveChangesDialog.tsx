@@ -102,6 +102,7 @@ export function SaveChangesDialog({
                       statements.length > 1 &&
                       `Statement ${failure.statement + 1} of ${statements.length} stopped it. `}
                     {failure.message}
+                    {failure.connectionLost && ' The connection to the server was lost. Try again to reconnect.'}
                   </p>
                   {failure.statement !== undefined && statements.length > 1 && (
                     <pre className="selectable mt-1.5 max-h-20 overflow-auto whitespace-pre-wrap break-words rounded-md border border-destructive/30 p-2 font-mono text-[11.5px] text-foreground">

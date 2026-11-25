@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { cellText, formatCount, formatDuration, plural } from '@/lib/format'
 import { MOD, cn, shortcut } from '@/lib/utils'
-import { ROW_LIMITS, countChanges, useStore, type ResultEntry, type Tab } from '@/store'
+import { CONNECTION_LOST, ROW_LIMITS, countChanges, useStore, type ResultEntry, type Tab } from '@/store'
 import { FindBar } from './FindBar'
 import { ResultsGrid } from './ResultsGrid'
 import { SaveChangesDialog, type SavePlan } from './SaveChangesDialog'
@@ -31,6 +31,9 @@ function ErrorView({ sql, result }: { sql: string; result: ErrorResult }) {
           <p className="selectable text-[13px] font-medium">{stopped ? 'Stopped before it finished.' : result.message}</p>
           {result.code && !stopped && (
             <p className="selectable mt-0.5 font-mono text-[11px] opacity-80">{result.code}</p>
+          )}
+          {result.connectionLost && !stopped && (
+            <p className="mt-1.5 max-w-[70ch] text-[12.5px] text-foreground">{CONNECTION_LOST} Run it again to reconnect.</p>
           )}
         </div>
       </div>

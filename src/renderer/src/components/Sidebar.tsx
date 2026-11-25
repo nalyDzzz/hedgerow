@@ -221,20 +221,13 @@ function ConnectionNode({ connection, onDelete }: { connection: SavedConnection;
   const live = useStore((state) => state.live[connection.id]) as LiveConnection | undefined
   const expanded = useStore((state) => Boolean(state.expanded[key]))
   const focused = useStore((state) => state.focusedConnectionId === connection.id)
-  const { connect, disconnect, toggleNode, selectNode, focusConnection, newTab, setDialog, loadSchema } =
+  const { connect, disconnect, refreshConnection, toggleNode, selectNode, focusConnection, newTab, setDialog } =
     useStore.getState()
   const disconnected = !live || live.status === 'failed'
 
   const databases = [...(live?.databases ?? [])].sort(
     (a, b) => Number(SYSTEM_DATABASES.has(a)) - Number(SYSTEM_DATABASES.has(b)) || a.localeCompare(b),
   )
-
-  const refresh = async () => {
-    const open = Object.keys(live?.schemas ?? {})
-    await disconnect(connection.id)
-    await connect(connection.id)
-    for (const database of open) void loadSchema(connection.id, database)
-  }
 
   return (
     <div data-tint style={tintStyle(connection.hue)}>
@@ -296,7 +289,7 @@ function ConnectionNode({ connection, onDelete }: { connection: SavedConnection;
             <SquareTerminal />
             New query
           </ContextMenuItem>
-          <ContextMenuItem disabled={live?.status !== 'connected'} onSelect={() => void refresh()}>
+          <ContextMenuItem disabled={live?.status !== 'connected'} onSelect={() => void refreshConnection(connection.id)}>
             <RefreshCw />
             Refresh
           </ContextMenuItem>
