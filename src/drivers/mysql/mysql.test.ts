@@ -753,6 +753,34 @@ describe.skipIf(!port)('mysql driver', () => {
       expect(whole).not.toHaveProperty('notUndone')
     })
 
+    it('says what is not known when the connection is lost before a save could be undone', async () => {
+      const guarded = `\`${DB}\`.\`guarded\``
+      const other = await mysqlDriver.connect({ ...params, database: DB })
+      const id = rows(await other.execute('SELECT CONNECTION_ID()', options)).rows[0][0]
+      // The first statement runs, and its trigger writes to the journal. The second waits long enough to be cut off.
+      const pending = other.applyEdits([
+        `UPDATE ${guarded} SET \`name\` = 'gone' WHERE \`id\` = 1`,
+        `UPDATE ${guarded} SET \`name\` = 'late' WHERE \`id\` = 2 AND SLEEP(5) = 0`,
+      ])
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      await session.execute(`KILL ${Number(id)}`, options)
+      const saved = await pending
+      expect(saved).toMatchObject({ ok: false, connectionLost: true, statement: 1 })
+      // Nobody heard whether the server could undo everything, and here it could not.
+      expect(saved.ok === false && saved.notUndone).toMatch(/before the server could say that everything was undone/)
+      expect((await select('SELECT name FROM guarded ORDER BY id')).rows).toEqual([['a'], ['b']])
+      expect((await select('SELECT note FROM journal')).rows).toEqual([['changed 1'], ['changed 1']])
+
+      // Lost before any statement was sent, there is nothing that could remain.
+      const idle = await mysqlDriver.connect({ ...params, database: DB })
+      const idleId = rows(await idle.execute('SELECT CONNECTION_ID()', options)).rows[0][0]
+      await session.execute(`KILL ${Number(idleId)}`, options)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const nothing = await idle.applyEdits([`UPDATE ${guarded} SET \`name\` = 'x' WHERE \`id\` = 1`])
+      expect(nothing).toMatchObject({ ok: false, connectionLost: true })
+      expect(nothing).not.toHaveProperty('notUndone')
+    })
+
     it('counts a row that already holds the new value as that one row', async () => {
       const outcome = await session.applyEdits([`UPDATE ${TABLE} SET \`bio\` = 'before' WHERE \`id\` = 1`])
       expect(outcome).toMatchObject({ ok: true })

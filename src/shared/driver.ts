@@ -240,8 +240,9 @@ export type SaveResult =
       connectionLost?: boolean
       /**
        * Present when it cannot be said that nothing was saved: the server could
-       * not undo everything, or the connection failed before it answered the
-       * commit. Says which, in a sentence fit to show a person as-is.
+       * not undo everything, or the connection failed before the server could
+       * say that it had, or before it answered the commit. Says which, in words
+       * fit to show a person as-is.
        */
       notUndone?: string
       durationMs: number
