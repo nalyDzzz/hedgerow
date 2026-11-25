@@ -149,6 +149,18 @@ interface NewTabOptions {
   table?: TableRef
 }
 
+/** The statements that would save a result's staged changes, with what they were worked out from. */
+export interface PlannedSave {
+  /** The result the changes belong to. */
+  entryId: number
+  /**
+   * The staged changes as they stood. Anything done in the grid afterwards puts
+   * others in their place, and the statements then no longer say what would be saved.
+   */
+  staged: StagedChanges
+  statements: string[]
+}
+
 /** Asked before something in a tab would be thrown away: changes made in a grid, or an open transaction. */
 export interface DiscardPrompt {
   tabId: string
@@ -222,13 +234,13 @@ interface State {
   duplicateRow(id: string, row: number): void
   discardChanges(id: string): void
   /** Asks the driver for the statements that would save the active result's changes. Runs nothing. */
-  planSave(id: string): Promise<string[]>
+  planSave(id: string): Promise<PlannedSave>
   /**
    * Runs those statements in one transaction, then reloads the rows to show what
-   * was stored. `entryId` names the result they were planned for, and they are
-   * run for no other.
+   * was stored. They are run only for the result they were planned for, and only
+   * while its staged changes are still the ones they were worked out from.
    */
-  save(id: string, entryId: number, statements: string[]): Promise<SaveResult>
+  save(id: string, plan: PlannedSave): Promise<SaveResult>
   /** Answers the question in `discardPrompt`. */
   answerDiscard(discard: boolean): void
 
@@ -365,6 +377,8 @@ export const useStore = create<State>()((set, get) => {
   /** Changes the staged changes of a tab's active result, if that result can be edited. */
   const restage = (id: string, change: (staged: StagedChanges, entry: ResultEntry) => StagedChanges | undefined) =>
     patchTab(id, (tab) => {
+      // Not while a statement or a save runs: the rows are about to be replaced, or the changes written.
+      if (tab.running) return {}
       const entry = tab.results[tab.activeResult] as ResultEntry | undefined
       if (entry?.result.kind !== 'rows' || !entry.result.editing) return {}
       const staged = change(entry.staged ?? { cells: {}, deleted: {}, added: [] }, entry)
@@ -977,23 +991,30 @@ export const useStore = create<State>()((set, get) => {
         throw new Error('There are no changes to save.')
       }
       const { columns, editing, rows } = entry.result
-      const changes = rowChanges(rows, editing.key, entry.staged)
+      // Taken now, before anything is waited for. The grid can still be changed meanwhile, and
+      // whoever gets the statements has to be able to tell that they are for these changes.
+      const { staged } = entry
+      const changes = rowChanges(rows, editing.key, staged)
       const sessionId = await sessionFor(id)
       if (!sessionId) throw new Error('This tab was closed.')
       try {
-        return await api.sessions.planEdits(sessionId, { columns, editing, changes })
+        const statements = await api.sessions.planEdits(sessionId, { columns, editing, changes })
+        return { entryId: entry.id, staged, statements }
       } catch (error) {
         throw new Error(await explainFailure(id, sessionId, error, 'Save again to reconnect.'))
       }
     },
 
-    async save(id, entryId, statements) {
+    async save(id, plan) {
+      const { statements } = plan
       const tab = tabById(id)
       const entry = tab?.results[tab.activeResult]
       if (!tab || !entry || tab.running) {
         return { ok: false, message: 'Wait for the running statement to finish, then save again.', durationMs: 0 }
       }
-      if (entry.id !== entryId || countChanges(entry.staged) === 0) {
+      // Saving clears what is staged. Statements worked out from other changes would leave some
+      // of it unwritten and cleared all the same.
+      if (entry.id !== plan.entryId || entry.staged !== plan.staged) {
         return {
           ok: false,
           message: 'These statements were not planned for the changes that are on screen now. Close this and save again.',

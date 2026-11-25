@@ -5,7 +5,15 @@ import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { cellText, formatCount, formatDuration, plural } from '@/lib/format'
 import { MOD, cn, modalOpen, shortcut } from '@/lib/utils'
-import { CONNECTION_LOST, ROW_LIMITS, countChanges, useStore, type ResultEntry, type Tab } from '@/store'
+import {
+  CONNECTION_LOST,
+  ROW_LIMITS,
+  countChanges,
+  useStore,
+  type ResultEntry,
+  type StagedChanges,
+  type Tab,
+} from '@/store'
 import { FindBar } from './FindBar'
 import { ResultsGrid } from './ResultsGrid'
 import { SaveChangesDialog, type SavePlan } from './SaveChangesDialog'
@@ -151,8 +159,8 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
   const [inspectorWidth, setInspectorWidth] = useState(380)
   /** The cell the grid asked the value panel to edit, as "row:column", and which request that was. */
   const [panelEdit, setPanelEdit] = useState<{ cell: string; request: number } | null>(null)
-  /** The statements under review, with the result they were planned for. */
-  const [plan, setPlan] = useState<(SavePlan & { tabId: string; entryId: number }) | null>(null)
+  /** The statements under review, with the result and the staged changes they were planned for. */
+  const [plan, setPlan] = useState<(SavePlan & { tabId: string; entryId: number; staged: StagedChanges }) | null>(null)
   /** Set by a button out here that moves the selection in the grid, for the grid to pick up. */
   const gridWanted = useRef(false)
 
@@ -199,22 +207,32 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
     addRow(tab.id)
   }
 
-  // This panel stays as tabs come and go, and a plan must not outlast its result: shown over
-  // another, its statements would be offered, and run, as if they were that one's changes.
-  const reviewing = plan !== null && plan.tabId === tab.id && plan.entryId === entry?.id ? plan : null
-  useEffect(() => {
-    if (plan !== null && reviewing === null) setPlan(null)
-  }, [plan, reviewing])
+  // This panel stays as tabs come and go, and a plan must not outlast what it was made for.
+  // Shown over another result, its statements would be offered, and run, as that one's changes.
+  // Shown after the grid was changed, they would leave the newer change out, and saving would
+  // clear it as if it had been written.
+  const planned = plan !== null && plan.tabId === tab.id && plan.entryId === entry?.id
+  const reviewing = planned && plan.staged === staged ? plan : null
 
   const review = async () => {
-    if (!entry) return
-    const planned = { tabId: tab.id, entryId: entry.id }
+    if (!entry || !staged) return
+    const made = { tabId: tab.id, entryId: entry.id, staged }
     try {
-      setPlan({ ...planned, statements: await planSave(tab.id) })
+      setPlan({ tabId: tab.id, ...(await planSave(tab.id)) })
     } catch (error) {
-      setPlan({ ...planned, problem: error instanceof Error ? error.message : String(error) })
+      setPlan({ ...made, problem: error instanceof Error ? error.message : String(error) })
     }
   }
+
+  useEffect(() => {
+    if (plan === null || reviewing !== null) return
+    setPlan(null)
+    // The grid was changed while the statements were being worked out, which takes a moment on
+    // a slow connection. They are worked out again, for what is staged now.
+    if (planned && changes > 0 && !tab.running) void review()
+    // `review` reads what this render has, which is what the effect is for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, reviewing])
 
   // Save is where people expect it, whenever there is something to save.
   const canSave = changes > 0 && !tab.running && reviewing === null
@@ -522,7 +540,7 @@ export function ResultsPanel({ tab }: { tab: Tab }) {
           table={rowsResult.editing.table}
           connection={connectionName}
           changes={changes}
-          onSave={(statements) => save(tab.id, reviewing.entryId, statements)}
+          onSave={(statements) => save(tab.id, { entryId: reviewing.entryId, staged: reviewing.staged, statements })}
           onStop={() => void cancel(tab.id)}
           onClose={() => setPlan(null)}
         />
