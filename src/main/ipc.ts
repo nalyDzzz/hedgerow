@@ -1,5 +1,7 @@
-import { app, ipcMain, nativeTheme, net, type BrowserWindow } from 'electron'
-import type { AppApi, ConnectionInput, IpcEnvelope } from '@shared/api'
+import { readFile, stat } from 'node:fs/promises'
+import { basename } from 'node:path'
+import { app, dialog, ipcMain, nativeTheme, net, type BrowserWindow } from 'electron'
+import type { AppApi, ChosenCertificate, ConnectionInput, IpcEnvelope } from '@shared/api'
 import type { ConnectionParams } from '@shared/driver'
 import type { ConnectionStore } from './connection-store'
 import type { DriverHost } from './driver-host-client'
@@ -22,6 +24,44 @@ function paramsFromInput(input: ConnectionInput, store: ConnectionStore): Connec
     password: input.password ?? (input.id ? store.passwordFor(input.id) : ''),
     database: input.database.trim() || undefined,
     tls: input.tls,
+    ca: input.ca || undefined,
+  }
+}
+
+const CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g
+
+/**
+ * Lets the person pick a file of certificate authorities and gives back the
+ * certificates in it. Anything else the file holds, a private key say, is left behind.
+ */
+async function chooseCertificate(window: BrowserWindow | null): Promise<ChosenCertificate> {
+  const options: Electron.OpenDialogOptions = {
+    title: 'Certificate authority',
+    properties: ['openFile'],
+    filters: [
+      { name: 'Certificates', extensions: ['pem', 'crt', 'cer', 'ca-bundle'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  }
+  const chosen = await (window ? dialog.showOpenDialog(window, options) : dialog.showOpenDialog(options))
+  const path = chosen.filePaths[0]
+  if (chosen.canceled || !path) return null
+
+  const name = basename(path)
+  try {
+    // A bundle of every public authority is a few hundred kilobytes. Nothing larger is one.
+    if ((await stat(path)).size > 2_000_000) return { problem: `${name} is too large to be a certificate file.` }
+    const found = (await readFile(path, 'utf8')).match(CERTIFICATE)
+    if (!found) {
+      return {
+        problem:
+          `${name} holds no certificate in PEM form, which starts with "-----BEGIN CERTIFICATE-----". ` +
+          'A certificate in another form has to be converted first.',
+      }
+    }
+    return { name, ca: found.join('\n') }
+  } catch (error) {
+    return { problem: `${name} could not be read: ${(error as Error).message}` }
   }
 }
 
@@ -39,6 +79,7 @@ export function registerIpc({ store, host, window }: Context): void {
           return { ok: false, message: (error as Error).message }
         }
       },
+      chooseCertificate: () => chooseCertificate(window()),
     },
 
     sessions: {

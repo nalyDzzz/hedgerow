@@ -16,7 +16,7 @@ import type {
   RowsResult,
   TableView,
 } from '@shared/driver'
-import { mysqlDriver } from './index'
+import { mysqlDriver, tlsOptions } from './index'
 
 const port = Number(process.env.TEST_MYSQL_PORT)
 const params: ConnectionParams = {
@@ -270,6 +270,30 @@ describe.skipIf(!port)('mysql driver', () => {
 
   it('explains a refused connection in plain words', async () => {
     await expect(mysqlDriver.connect({ ...params, port: 1 })).rejects.toThrow(/Nothing is listening at/)
+  })
+
+  describe('encryption', () => {
+    it('verifies who the server is only when asked to, and then in full', () => {
+      expect(tlsOptions({ tls: 'disabled' })).toBeUndefined()
+      expect(tlsOptions({ tls: 'required' })).toEqual({ rejectUnauthorized: false })
+      // Checking the signature without the name would accept a certificate made out to anyone.
+      expect(tlsOptions({ tls: 'verify' })).toMatchObject({ rejectUnauthorized: true, verifyIdentity: true })
+      expect(tlsOptions({ tls: 'verify', ca: 'PEM' })).toMatchObject({ ca: 'PEM' })
+    })
+
+    it('encrypts the connection when that is all that is asked', async () => {
+      const encrypted = await mysqlDriver.connect({ ...params, tls: 'required' })
+      const cipher = rows(await encrypted.execute("SHOW SESSION STATUS LIKE 'Ssl_cipher'", options))
+      await encrypted.close()
+      expect(cipher.rows[0][1]).toMatch(/\w/)
+    })
+
+    it('refuses a server whose certificate no trusted authority signed', async () => {
+      // The test server signs its own. Nothing public vouches for it.
+      await expect(mysqlDriver.connect({ ...params, tls: 'verify' })).rejects.toThrow(
+        /not signed by an authority this connection trusts/,
+      )
+    })
   })
 
   it('rejects a wrong password with the server message', async () => {

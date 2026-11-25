@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import mysql from 'mysql2'
 import type { Connection, ConnectionOptions } from 'mysql2'
 import type {
@@ -221,6 +222,15 @@ const typeCast: ConnectionOptions['typeCast'] = (field, next) => {
   return value
 }
 
+/** What the MySQL library is told about encryption. Exported to be tested. */
+export function tlsOptions(params: Pick<ConnectionParams, 'tls' | 'ca'>): ConnectionOptions['ssl'] {
+  if (params.tls === 'disabled') return undefined
+  if (params.tls === 'required') return { rejectUnauthorized: false }
+  // Both have to be asked for. Without the second, any certificate a trusted authority
+  // signed is accepted, whoever it was made out to.
+  return { rejectUnauthorized: true, verifyIdentity: true, ca: params.ca || undefined }
+}
+
 function connectionOptions(params: ConnectionParams): ConnectionOptions {
   return {
     host: params.host,
@@ -228,10 +238,7 @@ function connectionOptions(params: ConnectionParams): ConnectionOptions {
     user: params.user,
     password: params.password,
     database: params.database || undefined,
-    ssl:
-      params.tls === 'disabled'
-        ? undefined
-        : { rejectUnauthorized: params.tls === 'verify' },
+    ssl: tlsOptions(params),
     connectTimeout: 10_000,
     charset: 'utf8mb4',
     multipleStatements: false,
@@ -258,6 +265,33 @@ function describeError(error: MysqlError, params: ConnectionParams): DriverError
       return new DriverError(`The host "${params.host}" could not be found.`, error.code)
     case 'ETIMEDOUT':
       return new DriverError(`Timed out connecting to ${where}.`, error.code)
+    case 'HANDSHAKE_NO_SSL_SUPPORT':
+      return new DriverError(
+        `The server at ${where} does not offer encryption. Setting Encryption to Off connects without it, ` +
+          'and everything sent can then be read on the way.',
+        error.code,
+      )
+    case 'HANDSHAKE_SSL_ERROR': {
+      // The library puts its own code on every failure to set up encryption, so the reason is in the words.
+      const said = error.message
+      if (/does not match certificate/i.test(said)) {
+        // The library checks a name only. Asked for by address, a server cannot be told from another.
+        const byAddress = isIP(params.host) !== 0
+        return new DriverError(
+          `The server's certificate was not made out to "${params.host}", so this may not be the server it ` +
+            `claims to be. ${byAddress ? 'A certificate is checked against a name: connect by the name of the server, not its address. ' : ''}${said}`,
+          error.code,
+        )
+      }
+      if (/self[- ]signed|unable to (verify|get)|issuer/i.test(said)) {
+        return new DriverError(
+          `The server's certificate is not signed by an authority this connection trusts (${said}). ` +
+            "If the server has an authority of its own, choose that authority's certificate file in the connection.",
+          error.code,
+        )
+      }
+      return new DriverError(`The connection could not be encrypted: ${said}`, error.code)
+    }
     default:
       return new DriverError(
         error.sqlMessage || error.message || error.code || 'The connection failed.',

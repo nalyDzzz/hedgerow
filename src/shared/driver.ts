@@ -16,6 +16,12 @@ export const DRIVER_INFO: Record<DriverId, { label: string; defaultPort: number 
   mysql: { label: 'MySQL', defaultPort: 3306 },
 }
 
+/**
+ * How a connection is protected on the way. `required` encrypts it but takes
+ * the server's word for who it is. `verify` also has the server prove it: its
+ * certificate has to be signed by a trusted authority and be made out to the
+ * host that was asked for.
+ */
 export type TlsMode = 'disabled' | 'required' | 'verify'
 
 export interface ConnectionParams {
@@ -26,6 +32,11 @@ export interface ConnectionParams {
   /** Database selected when the session opens. Optional. */
   database?: string
   tls: TlsMode
+  /**
+   * Certificates of the authorities to trust under `verify`, as PEM text, for a
+   * server whose certificate does not come from a public one. Absent to trust the public ones.
+   */
+  ca?: string
 }
 
 /** A binary value is summarised instead of shipped whole. */

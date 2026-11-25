@@ -568,7 +568,8 @@ export const useStore = create<State>()((set, get) => {
           before.port !== saved.port ||
           before.user !== saved.user ||
           before.database !== saved.database ||
-          before.tls !== saved.tls)
+          before.tls !== saved.tls ||
+          before.ca !== saved.ca)
       if (reconnect && get().live[saved.id]) await get().disconnect(saved.id)
       return saved
     },
