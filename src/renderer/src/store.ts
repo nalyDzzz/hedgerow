@@ -101,6 +101,11 @@ export interface Tab {
   /** Why the last change to the view could not be made, when the driver refused it. */
   viewProblem: string | null
   sessionId: string | null
+  /**
+   * True while the tab's session has a transaction open: changes that are not
+   * committed yet, and that are thrown away if the session ends first.
+   */
+  transaction: boolean
   sql: string
   running: boolean
   cancelRequested: boolean
@@ -137,10 +142,13 @@ interface NewTabOptions {
   table?: TableRef
 }
 
-/** Asked before unsaved changes in a tab would be thrown away. */
+/** Asked before something in a tab would be thrown away: changes made in a grid, or an open transaction. */
 export interface DiscardPrompt {
   tabId: string
+  /** How many changes made in the grid are not saved. */
   changes: number
+  /** True when closing the tab would end a session that has a transaction open, which rolls it back. */
+  transaction: boolean
   /** What the person was doing: running a statement replaces the results, closing removes them. */
   reason: 'run' | 'close'
 }
@@ -386,9 +394,11 @@ export const useStore = create<State>()((set, get) => {
    */
   const askBeforeDiscarding = (tab: Tab, reason: DiscardPrompt['reason'], proceed: () => void): boolean => {
     const changes = unsavedChanges(tab)
-    if (changes === 0) return false
+    // Running a statement leaves a transaction as it is. Closing the tab ends its session, and the transaction with it.
+    const transaction = reason === 'close' && tab.transaction
+    if (changes === 0 && !transaction) return false
     afterDiscard = proceed
-    set({ discardPrompt: { tabId: tab.id, changes, reason } })
+    set({ discardPrompt: { tabId: tab.id, changes, transaction, reason } })
     return true
   }
 
@@ -411,7 +421,7 @@ export const useStore = create<State>()((set, get) => {
 
   /** Lets go of a tab's session once its connection has failed, so that what the tab does next opens another. */
   const forgetSession = (id: string, sessionId: string) => {
-    patchTab(id, (tab) => (tab.sessionId === sessionId ? { sessionId: null } : {}))
+    patchTab(id, (tab) => (tab.sessionId === sessionId ? { sessionId: null, transaction: false } : {}))
     void api.sessions.close(sessionId).catch(() => {})
   }
 
@@ -439,6 +449,7 @@ export const useStore = create<State>()((set, get) => {
       sorted: null,
       viewProblem: null,
       sessionId: null,
+      transaction: false,
       sql: options.sql ?? '',
       running: false,
       cancelRequested: false,
@@ -474,6 +485,7 @@ export const useStore = create<State>()((set, get) => {
           item.id === entry.id ? { id: entry.id, sql, result, views: (entry.views ?? 0) + 1 } : item,
         ),
         database: result.database,
+        transaction: result.transaction,
       }))
 
     patchTab(id, { running: true, cancelRequested: false, selected: null })
@@ -481,13 +493,13 @@ export const useStore = create<State>()((set, get) => {
       const sessionId = await sessionFor(id)
       if (sessionId) {
         const result = await api.sessions.execute(sessionId, sql, { rowLimit: tab.rowLimit })
-        if (result.kind === 'error' && result.connectionLost) forgetSession(id, sessionId)
         replace(result)
+        if (result.kind === 'error' && result.connectionLost) forgetSession(id, sessionId)
       }
     } catch (error) {
       // The call itself failed, so the session is gone; the next run opens a new one.
-      patchTab(id, { sessionId: null })
-      replace({ kind: 'error', message: message(error), durationMs: 0, database: tab.database })
+      replace({ kind: 'error', message: message(error), durationMs: 0, database: tab.database, transaction: false })
+      patchTab(id, { sessionId: null, transaction: false })
     } finally {
       patchTab(id, { running: false, cancelRequested: false })
     }
@@ -625,7 +637,9 @@ export const useStore = create<State>()((set, get) => {
         delete rest[id]
         return {
           live: rest,
-          tabs: state.tabs.map((tab) => (tab.connectionId === id ? { ...tab, sessionId: null } : tab)),
+          tabs: state.tabs.map((tab) =>
+            tab.connectionId === id ? { ...tab, sessionId: null, transaction: false } : tab,
+          ),
         }
       })
       await Promise.allSettled(sessions.map((sessionId) => api.sessions.close(sessionId)))
@@ -761,6 +775,8 @@ export const useStore = create<State>()((set, get) => {
             results: [...latest.results, { id: ++resultCounter, sql, result }],
             activeResult: latest.results.length,
             database: result.database,
+            // A session that was let go has nothing open any more, whatever its last answer said.
+            ...(latest.sessionId === sessionId ? { transaction: result.transaction } : {}),
           }))
           if (result.kind === 'error' || tabById(id)?.cancelRequested) break
         }
@@ -768,12 +784,19 @@ export const useStore = create<State>()((set, get) => {
         // The call itself failed, so the session is gone; the next run opens a new one.
         patchTab(id, (latest) => ({
           sessionId: null,
+          transaction: false,
           results: [
             ...latest.results,
             {
               id: ++resultCounter,
               sql: current,
-              result: { kind: 'error', message: message(error), durationMs: 0, database: latest.database },
+              result: {
+                kind: 'error',
+                message: message(error),
+                durationMs: 0,
+                database: latest.database,
+                transaction: false,
+              },
             },
           ],
           activeResult: latest.results.length,
@@ -982,17 +1005,20 @@ export const useStore = create<State>()((set, get) => {
         const ids = added.map((_, index) => outcome.insertIds?.[statements.length - added.length + index] ?? null)
         const outside = entry.result.kind === 'rows' ? rowsOutside(entry.result, added, ids, result) : 0
         replaceEntry({ result, outside: outside || undefined })
-        patchTab(id, { database: result.database })
+        patchTab(id, (latest) => ({
+          database: result.database,
+          ...(latest.sessionId === sessionId ? { transaction: result.transaction } : {}),
+        }))
         return outcome
       } catch (error) {
         // The call itself failed, so the session is gone; the next run opens a new one.
-        patchTab(id, { sessionId: null })
+        patchTab(id, { sessionId: null, transaction: false })
         if (tabById(id)?.results.find((item) => item.id === entry.id)?.staged) {
           return { ok: false, message: message(error), durationMs: 0 }
         }
         // Saved, but the rows could not be read back. Say so where the rows were.
         replaceEntry({
-          result: { kind: 'error', message: message(error), durationMs: 0, database: tab.database },
+          result: { kind: 'error', message: message(error), durationMs: 0, database: tab.database, transaction: false },
         })
         return { ok: true, durationMs: 0 }
       } finally {

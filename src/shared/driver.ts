@@ -152,6 +152,11 @@ export interface ErrorResult {
 export type StatementResult = (RowsResult | OkResult | ErrorResult) & {
   /** The session's selected database after the statement ran. */
   database: string | null
+  /**
+   * True when the statement leaves the session with a transaction open: changes
+   * that are not committed, and that are thrown away if the session ends first.
+   */
+  transaction: boolean
 }
 
 export interface ExecuteOptions {

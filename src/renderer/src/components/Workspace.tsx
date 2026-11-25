@@ -158,6 +158,15 @@ function Toolbar({ tab }: { tab: Tab }) {
       </Button>
       <div className="mx-1 h-4 w-px bg-border" />
       <DatabasePicker tab={tab} />
+      {tab.transaction && (
+        <span
+          role="status"
+          className="ml-1 shrink-0 rounded-sm border border-border-strong px-1.5 py-0.5 text-[11.5px] font-medium text-foreground"
+          title="This tab has a transaction open. COMMIT keeps what it changed and ROLLBACK takes it back. Closing the tab, disconnecting or quitting rolls it back."
+        >
+          Transaction open
+        </span>
+      )}
     </div>
   )
 }
