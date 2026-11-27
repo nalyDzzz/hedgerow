@@ -22,7 +22,7 @@ function release(over: Record<string, unknown> = {}) {
     assets: ['win-x64.exe', 'mac-arm64.dmg', 'mac-x64.dmg', 'linux-x86_64.AppImage']
       .map((ending) => `Hedgerow-0.3.0-${ending}`)
       .concat('SHA256SUMS.txt')
-      .map((name) => ({ name, browser_download_url: `${DOWNLOADS}/${name}` })),
+      .map((name) => ({ name, size: 1000, browser_download_url: `${DOWNLOADS}/${name}` })),
     ...over,
   }
 }
@@ -33,6 +33,7 @@ function answering(body: unknown, status = 200, over: Partial<CheckContext> = {}
     current: '0.2.0',
     platform: 'win32',
     arch: 'x64',
+    canInstall: true,
     ...over,
   }
 }
@@ -120,12 +121,40 @@ describe('checking for a new version', () => {
         summary: 'Hedgerow 0.3.0 filters and sorts results.',
         publishedAt: '2026-12-01T10:00:00Z',
         releaseUrl: 'https://github.com/nalyDzzz/hedgerow/releases/tag/v0.3.0',
-        download: { name: 'Hedgerow-0.3.0-win-x64.exe', url: `${DOWNLOADS}/Hedgerow-0.3.0-win-x64.exe` },
+        download: {
+          name: 'Hedgerow-0.3.0-win-x64.exe',
+          url: `${DOWNLOADS}/Hedgerow-0.3.0-win-x64.exe`,
+          size: 1000,
+          checksums: `${DOWNLOADS}/SHA256SUMS.txt`,
+        },
+        installable: true,
       },
     })
 
     const mac = await checkForUpdate(answering(release(), 200, { platform: 'darwin', arch: 'arm64' }))
     expect(mac.status === 'available' && mac.update.download?.name).toBe('Hedgerow-0.3.0-mac-arm64.dmg')
+  })
+
+  it('offers to install it only where this copy can, and with a size and checksum to hold it to', async () => {
+    const installable = async (context: CheckContext) => {
+      const result = await checkForUpdate(context)
+      return result.status === 'available' && result.update.installable
+    }
+    expect(await installable(answering(release()))).toBe(true)
+    // macOS, say, where the installer goes to the browser instead.
+    expect(await installable(answering(release(), 200, { canInstall: false }))).toBe(false)
+
+    const assets = release().assets
+    const withoutChecksums = release({ assets: assets.filter((asset) => asset.name !== 'SHA256SUMS.txt') })
+    expect(await installable(answering(withoutChecksums))).toBe(false)
+    const withoutSize = release({ assets: assets.map(({ size: _size, ...asset }) => asset) })
+    expect(await installable(answering(withoutSize))).toBe(false)
+    const checksumsElsewhere = release({
+      assets: assets.map((asset) =>
+        asset.name === 'SHA256SUMS.txt' ? { ...asset, browser_download_url: 'https://example.com/SHA256SUMS.txt' } : asset,
+      ),
+    })
+    expect(await installable(answering(checksumsElsewhere))).toBe(false)
   })
 
   it('says the app is current when the latest release is not newer', async () => {
@@ -161,7 +190,7 @@ describe('checking for a new version', () => {
     expect(await checkForUpdate(answering({ message: 'Not Found' }))).toEqual({ status: 'current', current: '0.2.0' })
     expect(await checkForUpdate(answering(release({ assets: 'none', body: 7 })))).toMatchObject({
       status: 'available',
-      update: { summary: '', download: null },
+      update: { summary: '', download: null, installable: false },
     })
   })
 

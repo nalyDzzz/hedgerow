@@ -1,15 +1,16 @@
 import { readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { app, dialog, ipcMain, nativeTheme, net, type BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, nativeTheme, type BrowserWindow } from 'electron'
 import type { AppApi, ChosenCertificate, ConnectionInput, IpcEnvelope } from '@shared/api'
 import type { ConnectionParams } from '@shared/driver'
 import type { ConnectionStore } from './connection-store'
 import type { DriverHost } from './driver-host-client'
-import { checkForUpdate } from './updates'
+import type { Updater } from './updater'
 
 interface Context {
   store: ConnectionStore
   host: DriverHost
+  updater: Updater
   window(): BrowserWindow | null
 }
 
@@ -65,7 +66,7 @@ async function chooseCertificate(window: BrowserWindow | null): Promise<ChosenCe
   }
 }
 
-export function registerIpc({ store, host, window }: Context): void {
+export function registerIpc({ store, host, updater, window }: Context): void {
   const api: Omit<AppApi, 'platform'> = {
     connections: {
       list: async () => store.list(),
@@ -102,15 +103,11 @@ export function registerIpc({ store, host, window }: Context): void {
 
     updates: {
       current: async () => app.getVersion(),
-      check: () =>
-        checkForUpdate({
-          // Electron's own fetch, so the system's proxy settings apply.
-          fetch: (url, init) => net.fetch(url, { ...init, credentials: 'omit', cache: 'no-store' }),
-          current: app.getVersion(),
-          platform: process.platform,
-          // An Intel build on an Apple silicon Mac should be offered the build made for that Mac.
-          arch: app.runningUnderARM64Translation ? 'arm64' : process.arch,
-        }),
+      check: () => updater.check(),
+      download: () => updater.download(),
+      cancelDownload: async () => updater.cancel(),
+      downloadState: async () => updater.progress(),
+      restart: async () => updater.restart(),
     },
 
     window: {

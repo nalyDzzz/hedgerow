@@ -76,8 +76,16 @@ export interface AvailableUpdate {
   publishedAt: string | null
   /** The page that describes it. */
   releaseUrl: string
-  /** The installer for this system, when the release has one. */
-  download: { name: string; url: string } | null
+  /**
+   * The installer for this system, when the release has one. `size` is in bytes, and
+   * `checksums` is the release's list of SHA-256 sums, when it has one.
+   */
+  download: { name: string; url: string; size: number; checksums: string | null } | null
+  /**
+   * True when the app can download this release and install it by itself. Otherwise
+   * the installer is handed to the browser, as on macOS until the app is signed.
+   */
+  installable: boolean
 }
 
 /** The answer to "is there a newer version?". `current` is the version that is running. */
@@ -85,6 +93,14 @@ export type UpdateCheck =
   | { status: 'current'; current: string }
   | { status: 'available'; current: string; update: AvailableUpdate }
   | { status: 'failed'; current: string; message: string }
+
+/** How far the app has got with downloading a new version. `received` and `total` are bytes. */
+export type UpdateDownload =
+  | { state: 'none' }
+  | { state: 'downloading'; version: string; received: number; total: number }
+  /** Downloaded and checked. It is installed when the app restarts or closes. */
+  | { state: 'ready'; version: string }
+  | { state: 'failed'; version: string; message: string }
 
 export interface AppApi {
   platform: 'win32' | 'darwin' | 'linux' | string
@@ -121,6 +137,18 @@ export interface AppApi {
     current(): Promise<string>
     /** Asks GitHub for the latest release. Sends nothing else, and never rejects. */
     check(): Promise<UpdateCheck>
+    /**
+     * Downloads the release the last check found, when it is installable, and checks
+     * it against the release's checksums. Resolves once that is done, has failed or
+     * was called off, and never rejects.
+     */
+    download(): Promise<UpdateDownload>
+    /** Calls off a download that is under way. */
+    cancelDownload(): Promise<void>
+    /** How far the download has got. */
+    downloadState(): Promise<UpdateDownload>
+    /** Closes the app, installs the downloaded version and starts it. */
+    restart(): Promise<UpdateDownload>
   }
   window: {
     /** Keeps native window chrome in step with the app theme. */
@@ -160,5 +188,9 @@ export const API_CHANNELS = [
   'sessions:applyEdits',
   'updates:current',
   'updates:check',
+  'updates:download',
+  'updates:cancelDownload',
+  'updates:downloadState',
+  'updates:restart',
   'window:setTheme',
 ] as const satisfies readonly ApiChannel[]

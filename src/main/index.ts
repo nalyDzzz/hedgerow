@@ -1,10 +1,13 @@
-import { join } from 'node:path'
-import { app, BrowserWindow, Menu, nativeTheme, shell } from 'electron'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
+import { app, BrowserWindow, Menu, nativeTheme, net, shell } from 'electron'
 import { APP_NAME } from '@shared/app'
 import windowIcon from '../../build/icon.png?asset'
 import { ConnectionStore } from './connection-store'
 import { DriverHost } from './driver-host-client'
 import { registerIpc, TITLE_BAR_HEIGHT } from './ipc'
+import { installerFor, UPDATED_ARGUMENT } from './update-install'
+import { Updater } from './updater'
 
 let mainWindow: BrowserWindow | null = null
 const host = new DriverHost()
@@ -80,9 +83,48 @@ function installMenu(): void {
   }
 }
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit()
-} else {
+/**
+ * Where a new version waits to be installed: a cache folder, which a roaming
+ * profile does not carry around. Not "hedgerow-updater", which the Windows
+ * installer fills with a copy of itself for a kind of updater this app does not use.
+ */
+function updatesFolder(): string {
+  const local = process.env.LOCALAPPDATA
+  if (process.platform === 'win32' && local && isAbsolute(local)) return join(local, APP_NAME, 'Updates')
+  const cache = process.env.XDG_CACHE_HOME || join(homedir(), '.cache')
+  if (process.platform === 'linux' && isAbsolute(cache)) return join(cache, 'hedgerow', 'updates')
+  return join(app.getPath('temp'), 'hedgerow-updates')
+}
+
+function createUpdater(): Updater {
+  // Electron's own fetch, so the system's proxy settings apply.
+  const fetch = (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) =>
+    net.fetch(url, { ...init, credentials: 'omit', cache: 'no-store' })
+  return new Updater({
+    check: {
+      fetch,
+      current: app.getVersion(),
+      platform: process.platform,
+      // An Intel build on an Apple silicon Mac should be offered the build made for that Mac.
+      arch: app.runningUnderARM64Translation ? 'arm64' : process.arch,
+    },
+    fetchFile: fetch,
+    installer: installerFor({
+      name: app.getName(),
+      platform: process.platform,
+      packaged: app.isPackaged,
+      executable: process.execPath,
+      appImage: process.env.APPIMAGE,
+      args: process.argv.slice(1),
+    }),
+    folder: updatesFolder(),
+    quit: () => app.quit(),
+  })
+}
+
+function start(): void {
+  const updater = createUpdater()
+
   app.on('second-instance', () => {
     if (!mainWindow) return
     if (mainWindow.isMinimized()) mainWindow.restore()
@@ -91,9 +133,11 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     const store = new ConnectionStore(join(app.getPath('userData'), 'app.db'))
-    registerIpc({ store, host, window: () => mainWindow })
+    registerIpc({ store, host, updater, window: () => mainWindow })
     installMenu()
     createWindow()
+    // Later, because the installer that started this version may still be finishing.
+    setTimeout(() => void updater.clearDownloads(), 60_000).unref()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -109,8 +153,32 @@ if (!app.requestSingleInstanceLock()) {
     if (stopping) return
     // Quit a moment later, once running statements have been stopped. Cut off instead,
     // a statement would finish on the server, and commit, after the app is gone.
+    // A downloaded update is installed only then, for the same reason.
     stopping = true
     event.preventDefault()
-    void host.shutdown().finally(() => app.quit())
+    void host
+      .shutdown()
+      .finally(() => updater.finish())
+      .finally(() => app.quit())
   })
+}
+
+/**
+ * A copy started by an update can find the version it replaces still closing.
+ * It waits a few seconds for that one to go, rather than handing over to it.
+ */
+async function waitForTheOldVersion(): Promise<boolean> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    if (app.requestSingleInstanceLock()) return true
+  }
+  return false
+}
+
+if (app.requestSingleInstanceLock()) {
+  start()
+} else if (process.argv.includes(UPDATED_ARGUMENT)) {
+  void waitForTheOldVersion().then((only) => (only ? start() : app.quit()))
+} else {
+  app.quit()
 }
