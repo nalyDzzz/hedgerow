@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { ArrowDownToLine, Monitor, Moon, Sun } from 'lucide-react'
+import { ArrowDownToLine, Monitor, Moon, RotateCw, Sun } from 'lucide-react'
 import type { ThemeMode } from '@shared/api'
 import { APP_NAME } from '@shared/app'
 import { Button } from '@/components/ui/button'
 import { getThemeMode, setThemeMode } from '@/lib/theme'
 import { useActiveConnection, useActiveTab } from '@/store'
-import { useAnnouncedUpdate, useUpdates } from '@/updates'
+import { useAnnouncedUpdate, useUpdateDownload, useUpdates } from '@/updates'
 
 const THEMES: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
   { mode: 'system', label: 'Match system', icon: Monitor },
@@ -58,17 +58,25 @@ function ThemeToggle() {
  */
 function UpdateNotice() {
   const update = useAnnouncedUpdate()
+  const download = useUpdateDownload()
   if (!update) return null
+  const share = download.state === 'downloading' && download.total > 0 ? download.received / download.total : 0
+  const [label, title] =
+    download.state === 'ready'
+      ? ['Restart to update', `${APP_NAME} ${update.version} is downloaded. Click to restart and install it.`]
+      : download.state === 'downloading'
+        ? [`Downloading ${update.version} · ${Math.floor(share * 100)}%`, `${APP_NAME} ${update.version} is downloading.`]
+        : [`${update.version} available`, `${APP_NAME} ${update.version} is available. Click to see what is new and get it.`]
   return (
     <Button
       variant="outline"
       size="sm"
-      className="mr-1.5 text-muted-foreground"
-      title={`${APP_NAME} ${update.version} is available. Click to see what is new and download it.`}
+      className="mr-1.5 text-muted-foreground tabular-nums"
+      title={title}
       onClick={() => useUpdates.getState().setDialogOpen(true)}
     >
-      <ArrowDownToLine />
-      {update.version} available
+      {download.state === 'ready' ? <RotateCw /> : <ArrowDownToLine />}
+      {label}
     </Button>
   )
 }
