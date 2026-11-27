@@ -38,7 +38,12 @@ export interface CheckContext {
   /** `process.platform` and the processor of the machine, which decide which installer to offer. */
   platform: string
   arch: string
+  /** Whether this copy of the app can put a new version in place of itself. See `update-install.ts`. */
+  canInstall: boolean
 }
+
+/** The file of SHA-256 sums the release job attaches to every release. */
+export const CHECKSUMS_NAME = 'SHA256SUMS.txt'
 
 /** A version as its three numbers, or null if it is not written that way. A leading "v" is fine. */
 function parseVersion(text: string): [number, number, number] | null {
@@ -93,20 +98,28 @@ function text(value: unknown): string {
 function describe(release: Record<string, unknown>, version: string, context: CheckContext): AvailableUpdate {
   const page = text(release.html_url)
   const suffix = installerSuffix(context.platform, context.arch)
-  const assets = Array.isArray(release.assets) ? (release.assets as Record<string, unknown>[]) : []
-  const installer = assets.find((asset) => {
-    const name = text(asset?.name)
-    return (
-      suffix !== null && name.endsWith(suffix) && text(asset?.browser_download_url).startsWith(`${RELEASES_URL}download/`)
-    )
-  })
+  const assets = (Array.isArray(release.assets) ? (release.assets as Record<string, unknown>[]) : []).filter(
+    (asset) => text(asset?.browser_download_url).startsWith(`${RELEASES_URL}download/`),
+  )
+  const installer = assets.find((asset) => suffix !== null && text(asset.name).endsWith(suffix))
+  const checksums = assets.find((asset) => text(asset.name) === CHECKSUMS_NAME)
+  const size = typeof installer?.size === 'number' && installer.size > 0 ? installer.size : 0
 
   return {
     version,
     summary: summarize(text(release.body)),
     publishedAt: text(release.published_at) || null,
     releaseUrl: page.startsWith(RELEASES_URL) ? page : `${RELEASES_URL}latest`,
-    download: installer ? { name: text(installer.name), url: text(installer.browser_download_url) } : null,
+    download: installer
+      ? {
+          name: text(installer.name),
+          url: text(installer.browser_download_url),
+          size,
+          checksums: checksums ? text(checksums.browser_download_url) : null,
+        }
+      : null,
+    // Installing by itself needs a size and a checksum to hold the download to.
+    installable: context.canInstall && installer !== undefined && size > 0 && checksums !== undefined,
   }
 }
 
